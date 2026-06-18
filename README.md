@@ -5,11 +5,17 @@ A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Wo
 **WebAssembly**; it is shipped as a **pure-JS npm library** (`await init()` →
 `mount(...)`). No server, no editing, no plugins to install in the page.
 
-> Status: **M1 + M2 + M2.5 complete** — the shared rendering "geba" (display-list IR
-> + text/font stack + tiny-skia raster backend) runs in the browser and renders
-> Latin **and 繁體中文**; **`mount()` renders PDFs via PDFium-WASM**, including
-> **non-embedded CJK** fonts via an `FPDF_SetSystemFontInfo` fallback (verified
-> before/after, no regression). Office formats next.
+> Status (verified in-browser):
+> - **PDF — complete.** PDFium-WASM via `mount()`; embedded + non-embedded CJK,
+>   Web Worker, virtualized + zoomable viewer.
+> - **XLSX — complete.** Self-written Rust grid: widths/heights/merges, styles,
+>   number formats, **sheet tabs + viewport virtualization + frozen headers + zoom**.
+> - **DOCX — basic.** Self-written flow layout (paragraphs, runs, bold/size/colour,
+>   alignment, CJK+Latin wrapping). One continuous page; no pagination/zoom yet.
+> - **PPTX — not started.**
+>
+> All three working formats render Latin **and 繁體中文** through one shared geba
+> (display-list IR + skrifa/rustybuzz text stack + tiny-skia raster).
 
 ## Why this shape (the honest tradeoff)
 
@@ -141,11 +147,21 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
     shaped + truncated, numbers right-aligned). `mount()` sniffs the OOXML zip and
     routes xlsx → `render_xlsx` (WASM) → tiny-skia. Verified in-browser on a 繁中
     workbook.
-  - **M3.2** — real column widths / row heights, merged cells, alignment, number
-    formats. **M3.3** — styles (fonts, fills, borders, colors). **M3.4** — multiple
-    sheets, frozen panes, viewport virtualization for large grids.
-- **M4** — DOCX viewer: own flow-layout engine (the bulk of the work), ~80–90% fidelity.
-- **M5** — PPTX viewer: DrawingML shapes/theme inheritance, ~80–90% fidelity.
+  - **M3.2 ✅** — real column widths / row heights, merged cells, alignment.
+  - **M3.3 ✅** — styles (fonts/bold/colour, fills, borders) + number formats
+    (thousands, currency, percent, dates).
+  - **M3.4 ✅** — stateful `XlsxViewer`: **viewport virtualization** (only the
+    visible cell window is rendered on scroll), **sheet tabs**, **frozen column/row
+    headers**, and **zoom** (buttons + Ctrl/⌘-wheel + fit-width). Verified on a
+    2-sheet / 120-row workbook. *Remaining: sheet-defined frozen panes, charts
+    (DrawingML), conditional formatting.*
+- **M4 — DOCX viewer (self-written flow layout).**
+  - **M4.1 ✅** — `dv-docx`: parse paragraphs/runs + page geometry; greedy line
+    wrapping (spaces for Latin, any boundary for CJK); bold (faux) / size / colour;
+    paragraph alignment. Verified in-browser. *Rendered as one continuous canvas —
+    NOT yet paginated/virtualized/zoomable like PDF/XLSX. Remaining: tables, lists,
+    images, real pagination, styles.xml inheritance, italic.*
+- **M5** — PPTX viewer: DrawingML shapes/theme inheritance. **Not started.**
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 

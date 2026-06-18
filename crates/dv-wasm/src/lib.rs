@@ -175,6 +175,42 @@ impl XlsxBook {
     }
 }
 
+/// A parsed PPTX deck kept alive for per-slide, scalable renders.
+#[wasm_bindgen]
+pub struct PptxDeck {
+    deck: dv_pptx::Deck,
+    font: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl PptxDeck {
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> PptxDeck {
+        PptxDeck { deck: dv_pptx::Deck::parse(&bytes), font }
+    }
+
+    #[wasm_bindgen(js_name = slideCount)]
+    pub fn slide_count(&self) -> usize {
+        self.deck.slide_count()
+    }
+
+    /// `[width, height]` in base (zoom=1) px.
+    #[wasm_bindgen(js_name = slideSize)]
+    pub fn slide_size(&self) -> Vec<f32> {
+        vec![self.deck.width(), self.deck.height()]
+    }
+
+    #[wasm_bindgen(js_name = renderSlide)]
+    pub fn render_slide(&self, idx: usize, scale: f32) -> RenderedImage {
+        let font = FontData::new(self.font.clone());
+        let dl = self.deck.render_slide(idx, &font, scale);
+        let mut registry = FontRegistry::new();
+        registry.insert(FontId(0), FontData::new(self.font.clone()));
+        let rgba = render(&dl, &registry);
+        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    }
+}
+
 /// Render a DOCX document to RGBA via the shared geba (one continuous page).
 #[wasm_bindgen]
 pub fn render_docx(docx: Vec<u8>, font_bytes: Vec<u8>) -> RenderedImage {

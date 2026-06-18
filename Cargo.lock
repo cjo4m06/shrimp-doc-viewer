@@ -175,6 +175,17 @@ name = "dv-ir"
 version = "0.0.0"
 
 [[package]]
+name = "dv-pptx"
+version = "0.0.0"
+dependencies = [
+ "dv-ir",
+ "dv-render",
+ "dv-text",
+ "quick-xml",
+ "zip",
+]
+
+[[package]]
 name = "dv-render"
 version = "0.0.0"
 dependencies = [
@@ -199,6 +210,7 @@ dependencies = [
  "console_error_panic_hook",
  "dv-docx",
  "dv-ir",
+ "dv-pptx",
  "dv-render",
  "dv-text",
  "dv-xlsx",

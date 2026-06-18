@@ -109,7 +109,11 @@ export async function mount(target, source, options = {}) {
       const { renderDocxInto } = await import("./docx.js");
       return renderDocxInto(target, bytes, options);
     }
-    throw new Error(`doc-viewer.mount(): detected "${sub}" — PDF, XLSX and DOCX are wired (PPTX lands in M5).`);
+    if (sub === "pptx") {
+      const { renderPptxInto } = await import("./pptx.js");
+      return renderPptxInto(target, bytes, options);
+    }
+    throw new Error(`doc-viewer.mount(): detected "${sub}" — PDF, XLSX, DOCX and PPTX are wired.`);
   }
   throw new Error(
     `doc-viewer.mount(): detected "${format}" — supported so far: PDF, XLSX. ` +

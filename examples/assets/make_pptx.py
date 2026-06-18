@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Build a minimal valid .pptx for testing the slide renderer.
+
+No dependencies. Two slides with positioned text boxes (DrawingML a:xfrm
+off/ext in EMU), run formatting (size/bold/colour) and paragraph alignment, plus
+a coloured rectangle shape. Mixes 繁體中文 and English.
+
+Usage: python3 make_pptx.py out.pptx
+"""
+import sys
+import zipfile
+from xml.sax.saxutils import escape
+
+A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+EMU = 914400  # per inch
+
+# Slide size 10in x 7.5in (4:3).
+SLIDE_CX = 10 * EMU
+SLIDE_CY = int(7.5 * EMU)
+
+
+def textbox(idx, x_in, y_in, w_in, h_in, paras, fill=None):
+    """paras: list of (align, [(text, size_pt, bold, color_hex|None)])."""
+    off = f'<a:off x="{int(x_in * EMU)}" y="{int(y_in * EMU)}"/>'
+    ext = f'<a:ext cx="{int(w_in * EMU)}" cy="{int(h_in * EMU)}"/>'
+    fill_xml = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>' if fill else "<a:noFill/>"
+    ps = []
+    for align, runs in paras:
+        algn = f' algn="{align}"' if align else ""
+        rs = []
+        for (text, size_pt, bold, color) in runs:
+            rpr = f'<a:rPr lang="zh-Hant" sz="{int(size_pt * 100)}" b="{1 if bold else 0}">'
+            rpr += f'<a:solidFill><a:srgbClr val="{color}"/></a:solidFill>' if color else ""
+            rpr += "</a:rPr>"
+            rs.append(f"<a:r>{rpr}<a:t>{escape(text)}</a:t></a:r>")
+        ps.append(f"<a:p><a:pPr{algn}/>{''.join(rs)}</a:p>")
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{idx}" name="tb{idx}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+        f'<p:spPr><a:xfrm>{off}{ext}</a:xfrm>'
+        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill_xml}</p:spPr>'
+        f'<p:txBody><a:bodyPr/><a:lstStyle/>{"".join(ps)}</p:txBody></p:sp>'
+    )
+
+
+def slide(shapes):
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<p:sld xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}">'
+        f'<p:cSld><p:spTree>'
+        '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+        '<p:grpSpPr/>'
+        f'{"".join(shapes)}'
+        '</p:spTree></p:cSld></p:sld>'
+    )
+
+
+SLIDE1 = slide([
+    textbox(2, 1.0, 0.5, 8.0, 1.2, [("center", [("doc-viewer 簡報檢視器", 40, True, "FFFFFF")])], fill="1F6FEB"),
+    textbox(3, 1.0, 2.2, 8.0, 0.8, [("left", [("第一張投影片 — 繁體中文 PPTX 測試", 24, True, "1F2937")])]),
+    textbox(4, 1.0, 3.2, 8.0, 2.5, [
+        ("left", [("• 自寫 Rust 解析 DrawingML 形狀座標(EMU)", 18, False, "374151")]),
+        ("left", [("• 定位文字框、run 格式(字級/粗體/顏色)、段落對齊", 18, False, "374151")]),
+        ("left", [("• Positioned text boxes rendered via the shared geba", 18, False, "C0504D")]),
+    ]),
+])
+
+SLIDE2 = slide([
+    textbox(2, 1.0, 0.5, 8.0, 1.0, [("center", [("第二張投影片", 36, True, "1F2937")])]),
+    textbox(3, 1.0, 2.0, 3.6, 1.2, [("center", [("左方塊", 24, True, "FFFFFF")])], fill="4F81BD"),
+    textbox(4, 5.4, 2.0, 3.6, 1.2, [("center", [("右方塊", 24, True, "FFFFFF")])], fill="C0504D"),
+    textbox(5, 1.0, 4.0, 8.0, 1.0, [("right", [("— 簡報結束 —", 20, False, "888888")])]),
+])
+
+CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+<Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>"""
+
+RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"""
+
+PRES = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    f'<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}">'
+    '<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>'
+    f'<p:sldSz cx="{SLIDE_CX}" cy="{SLIDE_CY}"/></p:presentation>'
+)
+
+PRES_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>"""
+
+
+def main(path):
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", CT)
+        z.writestr("_rels/.rels", RELS)
+        z.writestr("ppt/presentation.xml", PRES)
+        z.writestr("ppt/_rels/presentation.xml.rels", PRES_RELS)
+        z.writestr("ppt/slides/slide1.xml", SLIDE1)
+        z.writestr("ppt/slides/slide2.xml", SLIDE2)
+    print("wrote", path)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "sample.pptx")

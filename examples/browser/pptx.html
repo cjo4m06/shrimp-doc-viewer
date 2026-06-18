@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>doc-viewer — PPTX demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #222; background: #f6f7f9; }
+      h1 { font-size: 1.2rem; }
+      #bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+      #status { font: 13px/1.5 ui-monospace, monospace; color: #555; }
+      .err { color: #c0392b; white-space: pre-wrap; }
+      #deck { margin-top: 1rem; max-width: 1000px; }
+    </style>
+  </head>
+  <body>
+    <h1>doc-viewer — PPTX 渲染 (自寫 Rust DrawingML + 共用地基)</h1>
+    <div id="bar">
+      <button id="sample">載入繁中範例 .pptx</button>
+      <input id="file" type="file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+      <span id="status">ready.</span>
+    </div>
+    <div id="deck"></div>
+
+    <script type="module">
+      import { mount } from "/packages/doc-viewer/src/index.js";
+
+      const status = document.getElementById("status");
+      const deck = document.getElementById("deck");
+      const FONT = "/examples/assets/fonts/NotoSansTC-VF.ttf";
+
+      async function render(bytes, label) {
+        try {
+          status.className = "";
+          status.textContent = `rendering ${label}…`;
+          const t0 = performance.now();
+          const view = await mount(deck, bytes, { fontUrl: FONT });
+          const ms = Math.round(performance.now() - t0);
+          status.textContent = `✓ ${label} — ${view.slideCount} 張投影片 — ${ms}ms`;
+          document.body.dataset.dvStatus = "ok";
+        } catch (e) {
+          status.className = "err";
+          status.textContent = "ERROR: " + (e && e.stack ? e.stack : e);
+          document.body.dataset.dvStatus = "error";
+        }
+      }
+
+      document.getElementById("sample").addEventListener("click", async () => {
+        render(new Uint8Array(await (await fetch("/examples/assets/sample.pptx")).arrayBuffer()), "sample.pptx");
+      });
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const f = e.target.files[0];
+        if (f) render(new Uint8Array(await f.arrayBuffer()), f.name);
+      });
+    </script>
+  </body>
+</html>
