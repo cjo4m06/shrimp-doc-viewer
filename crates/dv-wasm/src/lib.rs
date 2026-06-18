@@ -224,6 +224,43 @@ pub fn render_docx(docx: Vec<u8>, font_bytes: Vec<u8>) -> RenderedImage {
     RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
 }
 
+/// A paginated DOCX kept alive for per-page virtualized, zoomable rendering.
+#[wasm_bindgen]
+pub struct DocxDoc {
+    doc: dv_docx::DocxDoc,
+    font: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl DocxDoc {
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> DocxDoc {
+        let measure_font = FontData::new(font.clone());
+        DocxDoc { doc: dv_docx::DocxDoc::parse(&bytes, &measure_font), font }
+    }
+
+    #[wasm_bindgen(js_name = pageCount)]
+    pub fn page_count(&self) -> usize {
+        self.doc.page_count()
+    }
+
+    /// `[width, height]` in base (zoom=1) px.
+    #[wasm_bindgen(js_name = pageSize)]
+    pub fn page_size(&self) -> Vec<f32> {
+        let (w, h) = self.doc.page_size();
+        vec![w, h]
+    }
+
+    #[wasm_bindgen(js_name = renderPage)]
+    pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
+        let dl = self.doc.render_page(idx, scale);
+        let mut registry = FontRegistry::new();
+        registry.insert(FontId(0), FontData::new(self.font.clone()));
+        let rgba = render(&dl, &registry);
+        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    }
+}
+
 /// The semantic version of the WASM core, surfaced to JS for diagnostics.
 #[wasm_bindgen]
 pub fn version() -> String {

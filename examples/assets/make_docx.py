@@ -33,6 +33,16 @@ PARAS = [
     ("right", [("— 完 —", False, 24, "888888")]),
 ]
 
+# Extra body paragraphs so the document spans several pages (pagination +
+# virtualization test).
+for _i in range(1, 30):
+    PARAS.append(("both", [(
+        f"第 {_i} 段:這是用來測試分頁與頁面虛擬化的內文。doc-viewer 將流式內容切成固定大小的頁面,"
+        f"只渲染視窗附近的頁,捲離很遠的頁會釋放以維持恆定記憶體。Paragraph {_i}: pagination and "
+        f"viewport virtualization with mixed 中文 and English so lines wrap across the page width.",
+        False, 24, None,
+    )]))
+
 CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>

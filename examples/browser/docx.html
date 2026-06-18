@@ -36,7 +36,7 @@
           const t0 = performance.now();
           const view = await mount(page, bytes, { fontUrl: FONT });
           const ms = Math.round(performance.now() - t0);
-          status.textContent = `✓ ${label} — ${view.width}×${view.height}px — ${ms}ms`;
+          status.textContent = `✓ ${label} — ${view.pageCount} 頁,分頁/虛擬化/縮放 — ${ms}ms`;
           document.body.dataset.dvStatus = "ok";
         } catch (e) {
           status.className = "err";

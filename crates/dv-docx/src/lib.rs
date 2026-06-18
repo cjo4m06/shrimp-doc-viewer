@@ -41,6 +41,7 @@ struct Para {
 struct Document {
     paras: Vec<Para>,
     page_w: f32,
+    page_h: f32,
     margin_l: f32,
     margin_r: f32,
     margin_t: f32,
@@ -80,7 +81,8 @@ fn is_cjk(ch: char) -> bool {
 fn parse_document(xml: &str) -> Document {
     let mut doc = Document {
         paras: Vec::new(),
-        page_w: 794.0,
+        page_w: 816.0,  // US Letter default (12240 twips)
+        page_h: 1056.0, // 15840 twips
         margin_l: 96.0,
         margin_r: 96.0,
         margin_t: 96.0,
@@ -138,6 +140,9 @@ fn parse_document(xml: &str) -> Document {
             b"w:pgSz" => {
                 if let Some(w) = get_attr(e, b"w:w").and_then(|s| s.parse::<f32>().ok()) {
                     doc.page_w = w * TWIP_TO_PX;
+                }
+                if let Some(h) = get_attr(e, b"w:h").and_then(|s| s.parse::<f32>().ok()) {
+                    doc.page_h = h * TWIP_TO_PX;
                 }
             }
             b"w:pgMar" => {
@@ -264,59 +269,158 @@ fn line_width(line: &[Item]) -> f32 {
     line[..end].iter().map(|i| i.advance).sum()
 }
 
-/// Lay out and render a DOCX into a continuous page. `font` is used to measure
-/// and (under [`FontId(0)`]) to paint.
-pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
-    let doc = match read_document_xml(bytes) {
-        Some(xml) => parse_document(&xml),
-        None => return DisplayList::new(794.0, 200.0),
-    };
+/// One glyph placed on a line, page-relative x (at zoom 1), with paint style.
+#[derive(Clone, Copy)]
+struct PlacedGlyph {
+    id: u32,
+    x: f32,
+    size: f32,
+    color: Color,
+    bold: bool,
+}
 
+/// A laid-out line at zoom 1. `top` is the cumulative content-y of its top edge.
+struct Line {
+    placed: Vec<PlacedGlyph>,
+    top: f32,
+    line_h: f32,
+    advance: f32, // line_h + trailing paragraph spacing
+    ascent: f32,
+}
+
+/// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
+fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
     let content_w = (doc.page_w - doc.margin_l - doc.margin_r).max(32.0);
-    let mut commands: Vec<Command> = Vec::new();
-    let mut y = doc.margin_t;
+    let mut lines = Vec::new();
+    let mut top = 0.0f32;
 
     for para in &doc.paras {
         let items = shape_para(font, para);
         if items.is_empty() {
-            y += DEFAULT_SIZE_PX * 1.4;
+            let line_h = DEFAULT_SIZE_PX * 1.4;
+            lines.push(Line { placed: Vec::new(), top, line_h, advance: line_h, ascent: DEFAULT_SIZE_PX * 0.92 });
+            top += line_h;
             continue;
         }
-        let lines = wrap(items, content_w);
-        for line in &lines {
+        let wrapped = wrap(items, content_w);
+        let n = wrapped.len();
+        let para_space = max_para_size(para) * 0.45;
+        for (li, line) in wrapped.iter().enumerate() {
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
             let line_h = max_size * 1.4;
-            let baseline = y + max_size * 0.92;
             let lw = line_width(line);
-            let x_start = match para.align {
+            let mut x = match para.align {
                 Align::Left => doc.margin_l,
                 Align::Center => doc.margin_l + (content_w - lw) / 2.0,
                 Align::Right => doc.margin_l + (content_w - lw),
             };
-
-            // Emit glyphs, grouped into runs of equal (size, color, bold).
-            let mut x = x_start;
-            let mut i = 0;
-            while i < line.len() {
-                let (size, color, bold) = (line[i].size, line[i].color, line[i].bold);
-                let mut glyphs = Vec::new();
-                while i < line.len() && line[i].size == size && line[i].color == color && line[i].bold == bold {
-                    let it = &line[i];
-                    glyphs.push(PositionedGlyph { id: it.gid, x: x + it.x_off, y: baseline });
-                    x += it.advance;
-                    i += 1;
-                }
-                commands.push(Command::Glyphs(GlyphRun { font: FontId(0), size, paint: Paint::Solid(color), bold, glyphs }));
+            let mut placed = Vec::with_capacity(line.len());
+            for it in line {
+                placed.push(PlacedGlyph { id: it.gid, x: x + it.x_off, size: it.size, color: it.color, bold: it.bold });
+                x += it.advance;
             }
-            y += line_h;
+            let advance = line_h + if li + 1 == n { para_space } else { 0.0 };
+            lines.push(Line { placed, top, line_h, advance, ascent: max_size * 0.92 });
+            top += advance;
         }
-        y += max_para_size(para) * 0.45; // paragraph spacing
+    }
+    lines
+}
+
+/// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
+fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
+    let mut i = 0;
+    while i < line.placed.len() {
+        let (size, color, bold) = (line.placed[i].size, line.placed[i].color, line.placed[i].bold);
+        let mut glyphs = Vec::new();
+        while i < line.placed.len() && line.placed[i].size == size && line.placed[i].color == color && line.placed[i].bold == bold {
+            glyphs.push(PositionedGlyph { id: line.placed[i].id, x: line.placed[i].x * scale, y: baseline });
+            i += 1;
+        }
+        dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: size * scale, paint: Paint::Solid(color), bold, glyphs }));
+    }
+}
+
+/// Lay out and render a DOCX into a single continuous page (no pagination).
+pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
+    let doc = match read_document_xml(bytes) {
+        Some(xml) => parse_document(&xml),
+        None => return DisplayList::new(816.0, 200.0),
+    };
+    let lines = layout_lines(&doc, font);
+    let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
+    let mut dl = DisplayList::new(doc.page_w, total_h);
+    for line in &lines {
+        emit_line(&mut dl, line, doc.margin_t + line.top + line.ascent, 1.0);
+    }
+    dl
+}
+
+struct Page {
+    start: usize,
+    end: usize,
+    top_y: f32,
+}
+
+/// A paginated DOCX, ready for per-page virtualized, zoomable rendering.
+pub struct DocxDoc {
+    lines: Vec<Line>,
+    pages: Vec<Page>,
+    page_w: f32,
+    page_h: f32,
+    margin_t: f32,
+}
+
+impl DocxDoc {
+    pub fn parse(bytes: &[u8], font: &FontData) -> DocxDoc {
+        let doc = read_document_xml(bytes).map(|x| parse_document(&x)).unwrap_or_else(|| Document {
+            paras: Vec::new(),
+            page_w: 816.0,
+            page_h: 1056.0,
+            margin_l: 96.0,
+            margin_r: 96.0,
+            margin_t: 96.0,
+            margin_b: 96.0,
+        });
+        let lines = layout_lines(&doc, font);
+        let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
+
+        let mut pages = Vec::new();
+        let mut start = 0;
+        let mut used = 0.0f32;
+        let mut page_top = 0.0f32;
+        for (i, line) in lines.iter().enumerate() {
+            if used > 0.0 && used + line.line_h > cap {
+                pages.push(Page { start, end: i, top_y: page_top });
+                start = i;
+                used = 0.0;
+                page_top = line.top;
+            }
+            used += line.advance;
+        }
+        pages.push(Page { start, end: lines.len(), top_y: page_top });
+
+        DocxDoc { lines, pages, page_w: doc.page_w, page_h: doc.page_h, margin_t: doc.margin_t }
     }
 
-    let total_h = y + doc.margin_b;
-    let mut dl = DisplayList::new(doc.page_w, total_h);
-    dl.commands = commands;
-    dl
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
+    }
+    pub fn page_size(&self) -> (f32, f32) {
+        (self.page_w, self.page_h)
+    }
+
+    /// Render page `idx` into a device-px display list at `scale` (= zoom × dpr).
+    pub fn render_page(&self, idx: usize, scale: f32) -> DisplayList {
+        let mut dl = DisplayList::new((self.page_w * scale).max(1.0), (self.page_h * scale).max(1.0));
+        let Some(page) = self.pages.get(idx) else { return dl };
+        for li in page.start..page.end {
+            let line = &self.lines[li];
+            let local_top = self.margin_t + (line.top - page.top_y);
+            emit_line(&mut dl, line, (local_top + line.ascent) * scale, scale);
+        }
+        dl
+    }
 }
 
 fn max_para_size(para: &Para) -> f32 {
