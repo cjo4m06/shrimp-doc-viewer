@@ -73,8 +73,9 @@ fn preset_of(s: &str) -> Preset {
         "hexagon" => Preset::Hexagon,
         "rightArrow" => Preset::RightArrow,
         "leftArrow" => Preset::LeftArrow,
-        "line" | "straightConnector1" => Preset::Line,
-        _ => Preset::Rect, // unknown preset -> rectangle fallback
+        "line" => Preset::Line,
+        _ if s.contains("onnector") => Preset::Line, // straight/bent/curved connectors -> line
+        _ => Preset::Rect,                            // unknown preset -> rectangle fallback
     }
 }
 
@@ -104,6 +105,34 @@ struct Shape {
     paras: Vec<Para>,
     image: Option<dv_image::DecodedImage>,
     is_ph: bool,
+    flip_h: bool,
+    flip_v: bool,
+    rot: f32, // degrees, clockwise
+}
+
+/// Build a shape's local→device affine: flip within bbox, rotate about centre,
+/// translate to (x,y), then scale. Matches `from_row(sx,ky,kx,sy,tx,ty)`.
+fn shape_tf(sh: &Shape, scale: f32) -> Transform {
+    let (w, h) = (sh.w, sh.h);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let (fa, fe) = if sh.flip_h { (-1.0, w) } else { (1.0, 0.0) };
+    let (fd, ff) = if sh.flip_v { (-1.0, h) } else { (1.0, 0.0) };
+    let th = sh.rot * std::f32::consts::PI / 180.0;
+    let (co, si) = (th.cos(), th.sin());
+    let a = co * fa;
+    let c = -si * fd;
+    let e0 = co * (fe - cx) - si * (ff - cy) + cx;
+    let b = si * fa;
+    let d = co * fd;
+    let f0 = si * (fe - cx) + co * (ff - cy) + cy;
+    Transform {
+        sx: a * scale,
+        ky: b * scale,
+        kx: c * scale,
+        sy: d * scale,
+        tx: (e0 + sh.x) * scale,
+        ty: (f0 + sh.y) * scale,
+    }
 }
 
 /// One slide's drawables (master + layout decoration + slide shapes, z-ordered)
@@ -345,10 +374,39 @@ struct PhStyle {
     bold: Option<bool>,
     color: Option<Color>,
 }
-#[derive(Clone, Copy, Default)]
+
+/// Resolved placeholder text styles: master title/body/other defaults plus the
+/// layout's per-placeholder overrides keyed by idx and by type.
+#[derive(Clone, Default)]
 struct PhStyles {
-    title: PhStyle,
-    body: PhStyle,
+    master_title: PhStyle,
+    master_body: PhStyle,
+    master_other: PhStyle,
+    by_idx: HashMap<String, PhStyle>,
+    by_type: HashMap<String, PhStyle>,
+}
+
+impl PhStyles {
+    /// Resolve a slide placeholder's run defaults (master type default ← layout
+    /// type override ← layout idx override, most specific last).
+    fn resolve(&self, ty: Option<&str>, idx: Option<&str>) -> PhStyle {
+        let mut st = match ty {
+            Some("ctrTitle") | Some("title") => self.master_title,
+            Some("body") | Some("subTitle") | None => self.master_body,
+            _ => self.master_other,
+        };
+        if let Some(t) = ty {
+            if let Some(o) = self.by_type.get(t) {
+                merge_into(&mut st, *o);
+            }
+        }
+        if let Some(i) = idx {
+            if let Some(o) = self.by_idx.get(i) {
+                merge_into(&mut st, *o);
+            }
+        }
+        st
+    }
 }
 
 fn merge_into(base: &mut PhStyle, over: PhStyle) {
@@ -361,6 +419,33 @@ fn merge_into(base: &mut PhStyle, over: PhStyle) {
     if over.color.is_some() {
         base.color = over.color;
     }
+}
+
+/// Build the layout's per-placeholder style maps (by idx, by type).
+fn layout_ph_styles(xml: &str, theme: &Theme) -> (HashMap<String, PhStyle>, HashMap<String, PhStyle>) {
+    let mut by_idx = HashMap::new();
+    let mut by_type = HashMap::new();
+    for block in xml.split("<p:sp>").skip(1) {
+        let Some(phi) = block.find("<p:ph") else { continue };
+        let end = block[phi..].find('>').map(|k| phi + k + 1).unwrap_or(block.len());
+        let ph = &block[phi..end];
+        let attr = |name: &str| {
+            let pat = format!("{name}=\"");
+            ph.find(&pat).map(|i| {
+                let s = &ph[i + pat.len()..];
+                s[..s.find('"').unwrap_or(s.len())].to_string()
+            })
+        };
+        let style = extract_style(block, theme);
+        if let Some(ty) = attr("type") {
+            // accumulate so a size-less placeholder doesn't mask a sized sibling
+            by_type.entry(ty).and_modify(|e| merge_into(e, style)).or_insert(style);
+        }
+        if let Some(idx) = attr("idx") {
+            by_idx.entry(idx).or_insert(style);
+        }
+    }
+    (by_idx, by_type)
 }
 
 /// Read the first `<a:defRPr>` (size in px, bold, colour) from a style fragment.
@@ -411,19 +496,6 @@ fn slice_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
     Some(&s[i..j + close.len()])
 }
 
-/// The layout shape block whose `p:ph` matches one of `types` (for style inheritance).
-fn layout_ph_block<'a>(xml: &'a str, types: &[&str]) -> Option<&'a str> {
-    for block in xml.split("<p:sp>").skip(1) {
-        if let Some(phi) = block.find("<p:ph") {
-            let end = block[phi..].find('>').map(|k| phi + k + 1).unwrap_or(block.len());
-            let ph = &block[phi..end];
-            if types.iter().any(|t| ph.contains(&format!("type=\"{t}\""))) {
-                return Some(block);
-            }
-        }
-    }
-    None
-}
 
 impl Deck {
     pub fn parse(bytes: &[u8]) -> Deck {
@@ -478,24 +550,27 @@ impl Deck {
                 }
             }
 
-            // Placeholder text-style cascade: master title/body styles, overridden
-            // by the layout's matching placeholder styles.
+            // Placeholder text-style cascade: master title/body/other defaults +
+            // master/layout per-placeholder overrides keyed by idx and by type.
             let mut styles = PhStyles::default();
             if !master_xml.is_empty() {
-                if let Some(ts) = slice_between(&master_xml, "<p:titleStyle>", "</p:titleStyle>") {
-                    styles.title = extract_style(ts, &theme);
+                if let Some(s) = slice_between(&master_xml, "<p:titleStyle>", "</p:titleStyle>") {
+                    styles.master_title = extract_style(s, &theme);
                 }
-                if let Some(bs) = slice_between(&master_xml, "<p:bodyStyle>", "</p:bodyStyle>") {
-                    styles.body = extract_style(bs, &theme);
+                if let Some(s) = slice_between(&master_xml, "<p:bodyStyle>", "</p:bodyStyle>") {
+                    styles.master_body = extract_style(s, &theme);
                 }
+                if let Some(s) = slice_between(&master_xml, "<p:otherStyle>", "</p:otherStyle>") {
+                    styles.master_other = extract_style(s, &theme);
+                }
+                let (mi, mt) = layout_ph_styles(&master_xml, &theme);
+                styles.by_idx.extend(mi);
+                styles.by_type.extend(mt);
             }
             if !layout_xml.is_empty() {
-                if let Some(b) = layout_ph_block(&layout_xml, &["ctrTitle", "title"]) {
-                    merge_into(&mut styles.title, extract_style(b, &theme));
-                }
-                if let Some(b) = layout_ph_block(&layout_xml, &["subTitle", "body"]) {
-                    merge_into(&mut styles.body, extract_style(b, &theme));
-                }
+                let (li, lt) = layout_ph_styles(&layout_xml, &theme);
+                styles.by_type.extend(lt); // layout refines/overrides master placeholder styles
+                styles.by_idx.extend(li);
             }
 
             // Z-order: master decoration, then layout decoration, then slide content.
@@ -543,7 +618,7 @@ impl Deck {
         }
 
         for sh in shapes {
-            let tf = Transform { sx: scale, ky: 0.0, kx: 0.0, sy: scale, tx: sh.x * scale, ty: sh.y * scale };
+            let tf = shape_tf(sh, scale);
             if !sh.custom.is_empty() {
                 for sp in &sh.custom {
                     let mut p = PathData::new();
@@ -748,6 +823,12 @@ fn parse_part_shapes(
     let mut path_h = 1.0f32;
     let mut cmd_kind: u8 = 0; // 1=move 2=line 3=cubic
     let mut pt_buf: Vec<(f32, f32)> = Vec::new();
+    // group nesting: stack of accumulated (scale_x, scale_y, trans_x, trans_y)
+    // mapping child coords -> absolute. Base = identity.
+    let mut gstack: Vec<(f32, f32, f32, f32)> = vec![(1.0, 1.0, 0.0, 0.0)];
+    let mut in_grpspr = false;
+    let mut grp_depth: u32 = 0; // nesting of real <p:grpSp> (excludes the spTree root)
+    let mut g_xfrm = [0.0f32; 8]; // off x,y, ext cx,cy, chOff x,y, chExt cx,cy
 
     loop {
         let event = reader.read_event_into(&mut buf);
@@ -756,7 +837,7 @@ fn parse_part_shapes(
         let empty = matches!(&event, Ok(Event::Empty(_)));
         match event {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
-                b"p:sp" | b"p:pic" => {
+                b"p:sp" | b"p:pic" | b"p:cxnSp" => {
                     cur_ph = PhStyle::default();
                     cur = Some(Shape {
                         x: 0.0,
@@ -771,16 +852,44 @@ fn parse_part_shapes(
                         paras: Vec::new(),
                         image: None,
                         is_ph: false,
+                        flip_h: false,
+                        flip_v: false,
+                        rot: 0.0,
                     })
+                }
+                b"p:grpSp" => grp_depth += 1,
+                b"p:grpSpPr" => {
+                    in_grpspr = !empty;
+                    g_xfrm = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0];
+                }
+                b"a:xfrm" => {
+                    if !in_grpspr {
+                        if let Some(s) = cur.as_mut() {
+                            s.flip_h = get_attr(&e, b"flipH").as_deref() == Some("1");
+                            s.flip_v = get_attr(&e, b"flipV").as_deref() == Some("1");
+                            s.rot = get_attr(&e, b"rot").and_then(|v| v.parse::<f32>().ok()).map(|r| r / 60000.0).unwrap_or(0.0);
+                        }
+                    }
+                }
+                b"a:chOff" => {
+                    if in_grpspr {
+                        g_xfrm[4] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[5] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    }
+                }
+                b"a:chExt" => {
+                    if in_grpspr {
+                        g_xfrm[6] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[7] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    }
                 }
                 b"p:ph" => {
                     if let Some(s) = cur.as_mut() {
                         s.is_ph = true;
                     }
-                    cur_ph = match get_attr(&e, b"type").as_deref() {
-                        Some("ctrTitle") | Some("title") => ph_styles.title,
-                        _ => ph_styles.body,
-                    };
+                    let ty = get_attr(&e, b"type");
+                    let idx = get_attr(&e, b"idx");
+                    cur_ph = ph_styles.resolve(ty.as_deref(), idx.as_deref());
                 }
                 b"p:bg" => in_bg = !empty,
                 b"p:spPr" => in_sppr = !empty,
@@ -795,21 +904,31 @@ fn parse_part_shapes(
                     }
                 }
                 b"a:off" => {
-                    if let Some(s) = cur.as_mut() {
-                        if let Some(x) = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()) {
+                    let x = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok());
+                    let y = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok());
+                    if in_grpspr {
+                        g_xfrm[0] = x.unwrap_or(0.0);
+                        g_xfrm[1] = y.unwrap_or(0.0);
+                    } else if let Some(s) = cur.as_mut() {
+                        if let Some(x) = x {
                             s.x = x / EMU_PER_PX;
                         }
-                        if let Some(y) = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok()) {
+                        if let Some(y) = y {
                             s.y = y / EMU_PER_PX;
                         }
                     }
                 }
                 b"a:ext" => {
-                    if let Some(s) = cur.as_mut() {
-                        if let Some(cx) = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()) {
+                    let cx = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok());
+                    let cy = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok());
+                    if in_grpspr {
+                        g_xfrm[2] = cx.unwrap_or(1.0);
+                        g_xfrm[3] = cy.unwrap_or(1.0);
+                    } else if let Some(s) = cur.as_mut() {
+                        if let Some(cx) = cx {
                             s.w = cx / EMU_PER_PX;
                         }
-                        if let Some(cy) = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()) {
+                        if let Some(cy) = cy {
                             s.h = cy / EMU_PER_PX;
                         }
                     }
@@ -962,6 +1081,17 @@ fn parse_part_shapes(
                         }
                     }
                 }
+                b"a:latin" | b"a:ea" | b"a:cs" => {
+                    // We can't load the embedded Latin fonts (Epilogue Black, …) for CJK,
+                    // but approximate their weight: a "Black"/"Bold"/"Heavy" face -> faux-bold.
+                    if in_rpr {
+                        if let (Some(r), Some(tf)) = (cur_run.as_mut(), get_attr(&e, b"typeface")) {
+                            if ["Black", "Bold", "Heavy", "Semibold", "SemiBold"].iter().any(|w| tf.contains(w)) {
+                                r.bold = true;
+                            }
+                        }
+                    }
+                }
                 b"a:t" => in_t = true,
                 _ => {}
             },
@@ -977,6 +1107,25 @@ fn parse_part_shapes(
                 b"p:bg" => in_bg = false,
                 b"a:rPr" => in_rpr = false,
                 b"a:ln" => in_ln = false,
+                b"p:grpSpPr" => {
+                    in_grpspr = false;
+                    // Only real <p:grpSp> groups establish a child transform; the
+                    // spTree root's grpSpPr (depth 0) is ignored.
+                    if grp_depth > 0 {
+                        let gsx = if g_xfrm[6] != 0.0 { g_xfrm[2] / g_xfrm[6] } else { 1.0 };
+                        let gsy = if g_xfrm[7] != 0.0 { g_xfrm[3] / g_xfrm[7] } else { 1.0 };
+                        let ltx = (g_xfrm[0] - g_xfrm[4] * gsx) / EMU_PER_PX;
+                        let lty = (g_xfrm[1] - g_xfrm[5] * gsy) / EMU_PER_PX;
+                        let (psx, psy, ptx, pty) = *gstack.last().unwrap();
+                        gstack.push((psx * gsx, psy * gsy, psx * ltx + ptx, psy * lty + pty));
+                    }
+                }
+                b"p:grpSp" => {
+                    grp_depth = grp_depth.saturating_sub(1);
+                    if gstack.len() > 1 {
+                        gstack.pop();
+                    }
+                }
                 b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" => {
                     if let Some(sp) = cur_sub.as_mut() {
                         match cmd_kind {
@@ -1020,8 +1169,21 @@ fn parse_part_shapes(
                         s.paras.push(p);
                     }
                 }
-                b"p:sp" | b"p:pic" => {
-                    if let Some(s) = cur.take() {
+                b"p:sp" | b"p:pic" | b"p:cxnSp" => {
+                    if let Some(mut s) = cur.take() {
+                        // Map the shape from its group's child space to absolute px.
+                        let (gsx, gsy, gtx, gty) = *gstack.last().unwrap();
+                        if (gsx, gsy, gtx, gty) != (1.0, 1.0, 0.0, 0.0) {
+                            s.x = s.x * gsx + gtx;
+                            s.y = s.y * gsy + gty;
+                            s.w *= gsx;
+                            s.h *= gsy;
+                            for sub in &mut s.custom {
+                                for v in &mut sub.cmds {
+                                    *v = scale_verb(*v, gsx, gsy);
+                                }
+                            }
+                        }
                         if !(skip_ph && s.is_ph) {
                             shapes.push(s);
                         }
@@ -1113,6 +1275,16 @@ fn fill_rect(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
 
 fn adj_or(adj: &[i32], i: usize, default: i32) -> f32 {
     *adj.get(i).unwrap_or(&default) as f32 / 100000.0
+}
+
+fn scale_verb(v: PathVerb, sx: f32, sy: f32) -> PathVerb {
+    match v {
+        PathVerb::MoveTo(x, y) => PathVerb::MoveTo(x * sx, y * sy),
+        PathVerb::LineTo(x, y) => PathVerb::LineTo(x * sx, y * sy),
+        PathVerb::QuadTo(a, b, c, d) => PathVerb::QuadTo(a * sx, b * sy, c * sx, d * sy),
+        PathVerb::CubicTo(a, b, c, d, e, f) => PathVerb::CubicTo(a * sx, b * sy, c * sx, d * sy, e * sx, f * sy),
+        PathVerb::Close => PathVerb::Close,
+    }
 }
 
 /// Generate a closed path for a preset shape in local px coords (origin top-left).
