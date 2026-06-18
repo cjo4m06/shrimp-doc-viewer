@@ -8,6 +8,7 @@ description = "Self-written DOCX flow-layout renderer for doc-viewer: parses par
 [dependencies]
 dv-ir.workspace = true
 dv-text.workspace = true
+dv-image.workspace = true
 quick-xml = "0.31"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 

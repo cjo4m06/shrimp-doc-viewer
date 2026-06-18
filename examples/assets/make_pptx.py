@@ -56,14 +56,25 @@ def slide(shapes):
     )
 
 
+def pic(idx, rid, x_in, y_in, w_in, h_in):
+    off = f'<a:off x="{int(x_in * EMU)}" y="{int(y_in * EMU)}"/>'
+    ext = f'<a:ext cx="{int(w_in * EMU)}" cy="{int(h_in * EMU)}"/>'
+    return (
+        f'<p:pic><p:nvPicPr><p:cNvPr id="{idx}" name="pic{idx}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+        f'<p:blipFill><a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+        f'<p:spPr><a:xfrm>{off}{ext}</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+    )
+
+
 SLIDE1 = slide([
     textbox(2, 1.0, 0.5, 8.0, 1.2, [("center", [("doc-viewer 簡報檢視器", 40, True, "FFFFFF")])], fill="1F6FEB"),
     textbox(3, 1.0, 2.2, 8.0, 0.8, [("left", [("第一張投影片 — 繁體中文 PPTX 測試", 24, True, "1F2937")])]),
-    textbox(4, 1.0, 3.2, 8.0, 2.5, [
-        ("left", [("• 自寫 Rust 解析 DrawingML 形狀座標(EMU)", 18, False, "374151")]),
-        ("left", [("• 定位文字框、run 格式(字級/粗體/顏色)、段落對齊", 18, False, "374151")]),
-        ("left", [("• Positioned text boxes rendered via the shared geba", 18, False, "C0504D")]),
+    textbox(4, 1.0, 3.2, 4.2, 2.5, [
+        ("left", [("• 自寫 Rust 解析 DrawingML", 18, False, "374151")]),
+        ("left", [("• 定位文字框、run 格式", 18, False, "374151")]),
+        ("left", [("• 內嵌 PNG/JPEG 圖片 →", 18, False, "C0504D")]),
     ]),
+    pic(9, "rId1", 5.5, 3.3, 3.2, 2.0),  # embedded raster image (160x100, aspect 1.6)
 ])
 
 SLIDE2 = slide([
@@ -77,6 +88,7 @@ CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
 <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
 <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
 <Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
@@ -101,14 +113,26 @@ PRES_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </Relationships>"""
 
 
+SLIDE1_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+</Relationships>"""
+
+
 def main(path):
+    import os
+    img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-image.png")
+    with open(img_path, "rb") as f:
+        img_bytes = f.read()
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CT)
         z.writestr("_rels/.rels", RELS)
         z.writestr("ppt/presentation.xml", PRES)
         z.writestr("ppt/_rels/presentation.xml.rels", PRES_RELS)
         z.writestr("ppt/slides/slide1.xml", SLIDE1)
+        z.writestr("ppt/slides/_rels/slide1.xml.rels", SLIDE1_RELS)
         z.writestr("ppt/slides/slide2.xml", SLIDE2)
+        z.writestr("ppt/media/image1.png", img_bytes)
     print("wrote", path)
 
 

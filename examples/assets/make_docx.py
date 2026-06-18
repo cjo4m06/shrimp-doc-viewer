@@ -11,6 +11,32 @@ import zipfile
 from xml.sax.saxutils import escape
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture"
+EMU = 9525  # per px
+
+
+def drawing_para_xml(rid, w_px, h_px):
+    cx, cy = int(w_px * EMU), int(h_px * EMU)
+    return (
+        '<w:p><w:r><w:drawing>'
+        f'<wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="1" name="img"/>'
+        f'<a:graphic><a:graphicData uri="{PIC}">'
+        '<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="img"/><pic:cNvPicPr/></pic:nvPicPr>'
+        '<pic:blipFill><a:blip r:embed="rIdImg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
+    )
+
+
+DOC_RELS = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rIdImg" Type="{R}/image" Target="media/image1.png"/>
+</Relationships>"""
 
 # Each paragraph: (align, [ (text, bold, size_halfpoints, color_hex_or_None) ]).
 PARAS = [
@@ -34,6 +60,8 @@ PARAS = [
         ("顏色", False, 24, "1F6FEB"),
         (" 與段落對齊(左/中/右/兩端)。", False, 24, None),
     ]),
+    ("left", [("四、內嵌圖片(PNG,inline w:drawing)", True, 32, None)]),
+    ("left", [], {"image": (240, 150)}),
     ("left", [("三、清單與編號測試", True, 32, None)]),
     ("left", [("項目符號一", False, 24, None)], {"numId": 2, "ilvl": 0}),
     ("left", [("項目符號二", False, 24, None)], {"numId": 2, "ilvl": 0}),
@@ -60,6 +88,7 @@ CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
+<Default Extension="png" ContentType="image/png"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
@@ -106,6 +135,9 @@ NUMBERING = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 def para_xml(align, runs, opts=None):
     opts = opts or {}
+    if opts.get("image"):
+        w, h = opts["image"]
+        return drawing_para_xml("rIdImg", w, h)
     ppr = "<w:pPr>"
     if opts.get("pstyle"):
         ppr += f'<w:pStyle w:val="{opts["pstyle"]}"/>'
@@ -124,14 +156,21 @@ def main(path):
     )
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<w:document xmlns:w="{W}"><w:body>{body}{sect}</w:body></w:document>'
+        f'<w:document xmlns:w="{W}" xmlns:r="{R}" xmlns:wp="{WP}" xmlns:a="{A}" xmlns:pic="{PIC}">'
+        f'<w:body>{body}{sect}</w:body></w:document>'
     )
+    import os
+    img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-image.png")
+    with open(img_path, "rb") as f:
+        img_bytes = f.read()
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CT)
         z.writestr("_rels/.rels", RELS)
         z.writestr("word/document.xml", document)
+        z.writestr("word/_rels/document.xml.rels", DOC_RELS)
         z.writestr("word/styles.xml", STYLES)
         z.writestr("word/numbering.xml", NUMBERING)
+        z.writestr("word/media/image1.png", img_bytes)
     print("wrote", path)
 
 

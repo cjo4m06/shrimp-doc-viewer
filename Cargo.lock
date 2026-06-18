@@ -163,6 +163,7 @@ dependencies = [
 name = "dv-docx"
 version = "0.0.0"
 dependencies = [
+ "dv-image",
  "dv-ir",
  "dv-render",
  "dv-text",
@@ -186,6 +187,7 @@ version = "0.0.0"
 name = "dv-pptx"
 version = "0.0.0"
 dependencies = [
+ "dv-image",
  "dv-ir",
  "dv-render",
  "dv-text",

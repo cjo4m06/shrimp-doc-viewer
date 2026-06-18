@@ -73,11 +73,16 @@ struct Para {
     num_ilvl: u32,
     d_ind_left: Option<f32>,
     d_ind_hanging: Option<f32>,
+    // inline image (w:drawing): relationship id + extent (px)
+    image_rid: Option<String>,
+    image_w: f32,
+    image_h: f32,
     // resolved:
     align: Align,
     marker: Option<String>, // bullet/number prefix
     indent: f32,            // body left indent (px)
     hanging: f32,           // first-line marker hang (px)
+    image: Option<dv_image::DecodedImage>,
 }
 
 struct Document {
@@ -92,6 +97,7 @@ struct Document {
 
 const DEFAULT_SIZE_PX: f32 = 14.67; // 11pt
 const TWIP_TO_PX: f32 = 1.0 / 15.0; // 1/1440 inch * 96 dpi
+const EMU_TO_PX: f32 = 1.0 / 9525.0; // 914400 EMU/inch ÷ 96 dpi
 
 fn get_attr(e: &BytesStart, key: &[u8]) -> Option<String> {
     for a in e.attributes().flatten() {
@@ -153,10 +159,14 @@ fn parse_document(xml: &str) -> Document {
                     num_ilvl: 0,
                     d_ind_left: None,
                     d_ind_hanging: None,
+                    image_rid: None,
+                    image_w: 0.0,
+                    image_h: 0.0,
                     align: Align::Left,
                     marker: None,
                     indent: 0.0,
                     hanging: 0.0,
+                    image: None,
                 });
             }
             b"w:numId" => {
@@ -226,6 +236,21 @@ fn parse_document(xml: &str) -> Document {
                 }
             }
             b"w:t" => *in_t = true,
+            b"wp:extent" => {
+                if let Some(p) = cur_para.as_mut() {
+                    if let Some(cx) = get_attr(e, b"cx").and_then(|s| s.parse::<f32>().ok()) {
+                        p.image_w = cx * EMU_TO_PX;
+                    }
+                    if let Some(cy) = get_attr(e, b"cy").and_then(|s| s.parse::<f32>().ok()) {
+                        p.image_h = cy * EMU_TO_PX;
+                    }
+                }
+            }
+            b"a:blip" => {
+                if let (Some(p), Some(rid)) = (cur_para.as_mut(), get_attr(e, b"r:embed")) {
+                    p.image_rid = Some(rid);
+                }
+            }
             b"w:pgSz" => {
                 if let Some(w) = get_attr(e, b"w:w").and_then(|s| s.parse::<f32>().ok()) {
                     doc.page_w = w * TWIP_TO_PX;
@@ -600,9 +625,20 @@ struct PlacedGlyph {
     bold: bool,
 }
 
+/// An image placed on its own line (page-relative, at zoom 1).
+struct ImageBox {
+    rgba: Vec<u8>,
+    src_w: u32,
+    src_h: u32,
+    x: f32,
+    w: f32,
+    h: f32,
+}
+
 /// A laid-out line at zoom 1. `top` is the cumulative content-y of its top edge.
 struct Line {
     placed: Vec<PlacedGlyph>,
+    image: Option<ImageBox>,
     top: f32,
     line_h: f32,
     advance: f32, // line_h + trailing paragraph spacing
@@ -617,10 +653,32 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
     for para in &doc.paras {
         let body_left = doc.margin_l + para.indent;
         let content_w = (doc.page_w - doc.margin_r - body_left).max(32.0);
+
+        // Inline image paragraph: render as its own block, scaled to fit width.
+        if let Some(img) = &para.image {
+            let mut w = para.image_w.max(1.0);
+            let mut h = para.image_h.max(1.0);
+            if w > content_w {
+                h *= content_w / w;
+                w = content_w;
+            }
+            let space = max_para_size(para) * 0.45;
+            lines.push(Line {
+                placed: Vec::new(),
+                image: Some(ImageBox { rgba: img.rgba.clone(), src_w: img.width, src_h: img.height, x: body_left, w, h }),
+                top,
+                line_h: h,
+                advance: h + space,
+                ascent: h,
+            });
+            top += h + space;
+            continue;
+        }
+
         let items = shape_para(font, para);
         if items.is_empty() {
             let line_h = DEFAULT_SIZE_PX * 1.4;
-            lines.push(Line { placed: Vec::new(), top, line_h, advance: line_h, ascent: DEFAULT_SIZE_PX * 0.92 });
+            lines.push(Line { placed: Vec::new(), image: None, top, line_h, advance: line_h, ascent: DEFAULT_SIZE_PX * 0.92 });
             top += line_h;
             continue;
         }
@@ -658,7 +716,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 x += it.advance;
             }
             let advance = line_h + if li + 1 == n { para_space } else { 0.0 };
-            lines.push(Line { placed, top, line_h, advance, ascent: max_size * 0.92 });
+            lines.push(Line { placed, image: None, top, line_h, advance, ascent: max_size * 0.92 });
             top += advance;
         }
     }
@@ -667,6 +725,19 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
 
 /// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
 fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
+    if let Some(im) = &line.image {
+        let y_top = baseline - line.ascent * scale; // ascent == image height for image lines
+        dl.push(Command::Image {
+            rgba: im.rgba.clone(),
+            src_w: im.src_w,
+            src_h: im.src_h,
+            x: im.x * scale,
+            y: y_top,
+            w: im.w * scale,
+            h: im.h * scale,
+        });
+        return;
+    }
     let mut i = 0;
     while i < line.placed.len() {
         let (size, color, bold) = (line.placed[i].size, line.placed[i].color, line.placed[i].bold);
@@ -690,6 +761,7 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
     resolve_document(&mut doc, &table);
     let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
     resolve_numbering(&mut doc, &numbering);
+    resolve_images(&mut doc, bytes);
     let lines = layout_lines(&doc, font);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
@@ -729,6 +801,7 @@ impl DocxDoc {
         resolve_document(&mut doc, &table);
         let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
         resolve_numbering(&mut doc, &numbering);
+        resolve_images(&mut doc, bytes);
         let lines = layout_lines(&doc, font);
         let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
 
@@ -780,6 +853,72 @@ fn read_zip_entry(bytes: &[u8], name: &str) -> Option<String> {
     let mut s = String::new();
     f.read_to_string(&mut s).ok()?;
     Some(s)
+}
+
+fn read_zip_bytes(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes.to_vec())).ok()?;
+    let mut f = zip.by_name(name).ok()?;
+    let mut v = Vec::new();
+    f.read_to_end(&mut v).ok()?;
+    Some(v)
+}
+
+fn rels_map(xml: &str) -> HashMap<String, String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut map = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"Relationship" => {
+                if let (Some(id), Some(t)) = (get_attr(&e, b"Id"), get_attr(&e, b"Target")) {
+                    map.insert(id, t);
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    map
+}
+
+fn resolve_rel(base_dir: &str, target: &str) -> String {
+    if let Some(s) = target.strip_prefix('/') {
+        return s.to_string();
+    }
+    let mut parts: Vec<&str> = base_dir.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    for seg in target.split('/') {
+        match seg {
+            ".." => {
+                parts.pop();
+            }
+            "." | "" => {}
+            _ => parts.push(seg),
+        }
+    }
+    parts.join("/")
+}
+
+/// Resolve each paragraph's inline image: rels lookup → media bytes → decode.
+fn resolve_images(doc: &mut Document, bytes: &[u8]) {
+    let rels = match read_zip_entry(bytes, "word/_rels/document.xml.rels") {
+        Some(s) => rels_map(&s),
+        None => return,
+    };
+    for para in &mut doc.paras {
+        let Some(rid) = para.image_rid.clone() else { continue };
+        let Some(target) = rels.get(&rid) else { continue };
+        let path = resolve_rel("word", target);
+        if let Some(img) = read_zip_bytes(bytes, &path).and_then(|b| dv_image::decode(&b)) {
+            if para.image_w <= 0.0 {
+                para.image_w = img.width as f32;
+            }
+            if para.image_h <= 0.0 {
+                para.image_h = img.height as f32;
+            }
+            para.image = Some(img);
+        }
+    }
 }
 
 // --- styles.xml inheritance ------------------------------------------------

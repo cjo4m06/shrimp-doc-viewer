@@ -50,6 +50,7 @@ struct Shape {
     h: f32,
     fill: Option<Color>,
     paras: Vec<Para>,
+    image: Option<dv_image::DecodedImage>,
 }
 
 /// A parsed presentation, ready for repeated slide renders.
@@ -73,6 +74,31 @@ fn read_entry(zip: &mut Zip, name: &str) -> Option<String> {
     let mut s = String::new();
     f.read_to_string(&mut s).ok()?;
     Some(s)
+}
+
+fn read_bytes(zip: &mut Zip, name: &str) -> Option<Vec<u8>> {
+    let mut f = zip.by_name(name).ok()?;
+    let mut v = Vec::new();
+    f.read_to_end(&mut v).ok()?;
+    Some(v)
+}
+
+/// Resolve a relationship `target` against a part's directory (handles `..`/`/`).
+fn resolve_rel(base_dir: &str, target: &str) -> String {
+    if let Some(s) = target.strip_prefix('/') {
+        return s.to_string();
+    }
+    let mut parts: Vec<&str> = base_dir.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    for seg in target.split('/') {
+        match seg {
+            ".." => {
+                parts.pop();
+            }
+            "." | "" => {}
+            _ => parts.push(seg),
+        }
+    }
+    parts.join("/")
 }
 
 fn parse_color(s: &str) -> Color {
@@ -107,11 +133,16 @@ impl Deck {
         deck.height = h;
         let rels = read_entry(&mut zip, "ppt/_rels/presentation.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
         for rid in rids {
-            if let Some(target) = rels.get(&rid) {
-                let path = if let Some(s) = target.strip_prefix('/') { s.to_string() } else { format!("ppt/{}", target) };
-                if let Some(xml) = read_entry(&mut zip, &path) {
-                    deck.slides.push(parse_slide(&xml));
-                }
+            if let Some(target) = rels.get(&rid).cloned() {
+                let path = resolve_rel("ppt", &target);
+                let (dir, file) = match path.rsplit_once('/') {
+                    Some((d, f)) => (d.to_string(), f.to_string()),
+                    None => (String::new(), path.clone()),
+                };
+                let Some(xml) = read_entry(&mut zip, &path) else { continue };
+                let rels_path = format!("{}/_rels/{}.rels", dir, file);
+                let slide_rels = read_entry(&mut zip, &rels_path).map(|s| rels_map(&s)).unwrap_or_default();
+                deck.slides.push(parse_slide(&xml, &slide_rels, &dir, &mut zip));
             }
         }
         deck
@@ -135,6 +166,17 @@ impl Deck {
         for sh in shapes {
             if let Some(fill) = sh.fill {
                 dl.push(fill_rect(sh.x * scale, sh.y * scale, sh.w * scale, sh.h * scale, fill));
+            }
+            if let Some(img) = &sh.image {
+                dl.push(Command::Image {
+                    rgba: img.rgba.clone(),
+                    src_w: img.width,
+                    src_h: img.height,
+                    x: sh.x * scale,
+                    y: sh.y * scale,
+                    w: sh.w * scale,
+                    h: sh.h * scale,
+                });
             }
         }
         for sh in shapes {
@@ -236,7 +278,7 @@ fn rels_map(xml: &str) -> HashMap<String, String> {
     map
 }
 
-fn parse_slide(xml: &str) -> Vec<Shape> {
+fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str, zip: &mut Zip) -> Vec<Shape> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut shapes = Vec::new();
@@ -252,8 +294,18 @@ fn parse_slide(xml: &str) -> Vec<Shape> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
-                b"p:sp" => cur = Some(Shape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, paras: Vec::new() }),
+                b"p:sp" | b"p:pic" => cur = Some(Shape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, paras: Vec::new(), image: None }),
                 b"p:spPr" => in_sppr = true,
+                b"a:blip" => {
+                    if let (Some(s), Some(rid)) = (cur.as_mut(), get_attr(&e, b"r:embed")) {
+                        if let Some(target) = slide_rels.get(&rid) {
+                            let path = resolve_rel(slide_dir, target);
+                            if let Some(img) = read_bytes(zip, &path).and_then(|b| dv_image::decode(&b)) {
+                                s.image = Some(img);
+                            }
+                        }
+                    }
+                }
                 b"a:off" => {
                     if let Some(s) = cur.as_mut() {
                         if let Some(x) = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()) {
@@ -336,7 +388,7 @@ fn parse_slide(xml: &str) -> Vec<Shape> {
                         s.paras.push(p);
                     }
                 }
-                b"p:sp" => {
+                b"p:sp" | b"p:pic" => {
                     if let Some(s) = cur.take() {
                         shapes.push(s);
                     }
