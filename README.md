@@ -10,10 +10,13 @@ A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Wo
 >   Web Worker, virtualized + zoomable viewer.
 > - **XLSX — complete.** Self-written Rust grid: widths/heights/merges, styles,
 >   number formats, **sheet tabs + viewport virtualization + frozen headers + zoom**.
-> - **DOCX — basic.** Self-written flow layout (paragraphs, runs, bold/size/colour,
->   alignment, CJK+Latin wrapping). One continuous page; no pagination/zoom yet.
-> - **PPTX — basic.** Self-written DrawingML: positioned text boxes + solid-fill
->   shapes, run formatting, slide navigation. No preset geometry/images/theme yet.
+> - **DOCX — near-complete.** Self-written flow layout: **paginated, virtualized,
+>   zoomable** viewer; styles.xml inheritance (basedOn); lists/numbering; inline
+>   images; bold/size/colour/alignment; CJK+Latin wrapping. *Remaining: tables.*
+> - **PPTX — near-complete.** Self-written DrawingML: positioned text boxes, **preset
+>   shape geometry + custom geometry + outlines**, solid fills, **raster images**,
+>   run formatting, slide navigation. *Remaining: theme/master colour inheritance,
+>   tables.*
 >
 > All three working formats render Latin **and 繁體中文** through one shared geba
 > (display-list IR + skrifa/rustybuzz text stack + tiny-skia raster).
@@ -157,18 +160,23 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
     2-sheet / 120-row workbook. *Remaining: sheet-defined frozen panes, charts
     (DrawingML), conditional formatting.*
 - **M4 — DOCX viewer (self-written flow layout).**
-  - **M4.1 ✅** — `dv-docx`: parse paragraphs/runs + page geometry; greedy line
-    wrapping (spaces for Latin, any boundary for CJK); bold (faux) / size / colour;
-    paragraph alignment. Verified in-browser. *Rendered as one continuous canvas —
-    NOT yet paginated/virtualized/zoomable like PDF/XLSX. Remaining: tables, lists,
-    images, real pagination, styles.xml inheritance, italic.*
+  - **M4.1 ✅** flow layout (paragraphs/runs, bold/size/colour, alignment, CJK+Latin wrapping).
+  - **M4.2 ✅** pagination + virtualized, zoomable `DocxViewer` (page geometry from sectPr).
+  - **M4.3 ✅** styles.xml inheritance (docDefaults → basedOn chain → direct; Heading/Title).
+  - **M4.4 ✅** lists/numbering (numbering.xml, (numId,ilvl) counters, %N, bullet/decimal/letter/roman, hanging indents).
+  - **M4.5 ✅** inline images (`w:drawing` → blip → media → decode → Image).
+  - **M4.6 — tables (`w:tbl`). NOT done** — needs a flat→Block(Para|Table) parser
+    refactor (context stack for cell-nested paragraphs) + two-pass row heights,
+    gridSpan/vMerge, borders/shading. Highest-value remaining DOCX feature.
 - **M5 — PPTX viewer (self-written DrawingML).**
-  - **M5.1 ✅** — `dv-pptx`: parse `presentation.xml` (slide size/order) + slide
-    `p:sp` shapes (a:off/a:ext EMU position, solid fills, text bodies with run
-    size/bold/colour + alignment); CJK+Latin wrapping per box; `PptxDeck` WASM
-    session + `PptxViewer` (slide nav + fit-width). Verified in-browser on a
-    2-slide deck. *Remaining: preset shape geometry, images, theme/master
-    inheritance, tables, charts.*
+  - **M5.1 ✅** positioned text boxes + solid-fill rects, run formatting, slide nav (`PptxDeck`/`PptxViewer`).
+  - **M5.2 ✅** raster images (`p:pic` → blip → media → decode → Image).
+  - **M5.3 ✅** shape geometry: 12 presets + custGeom + outlines.
+  - **M5.4 — theme/master/layout inheritance. NOT done** — `schemeClr` via `clrMap`
+    + lumMod/lumOff/shade/tint; placeholder text-style cascade. Additive (no refactor).
+  - **M5.5 — tables (`a:tbl`). NOT done** — port of the DOCX table layout to EMU/DrawingML.
+- **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
+  wasm size pass (wasm-opt, drop unused features).
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 
