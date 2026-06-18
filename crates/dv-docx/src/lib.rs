@@ -1787,7 +1787,7 @@ pub struct DocxDoc {
     pages: Vec<Page>,
     page_w: f32,
     page_h: f32,
-    margin_t: f32,
+    body_top: f32,
     header_dist: f32,
     footer_dist: f32,
     title_pg: bool,
@@ -1819,7 +1819,26 @@ impl DocxDoc {
         resolve_numbering(&mut doc, &numbering);
         resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
         let lines = layout_lines(&doc, font);
-        let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
+
+        // Resolve + lay out header/footer parts (by reference type).
+        let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+        let part = |refs: &[(String, String)], ty: &str| -> Option<HdrFtr> {
+            let id = refs.iter().find(|(t, _)| t == ty).map(|(_, id)| id)?;
+            let target = doc_rels.get(id)?;
+            let path = resolve_rel("word", target);
+            build_hdrftr(bytes, &path, font, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
+        };
+        let hdr_first = part(&doc.hdr_refs, "first");
+        let hdr_default = part(&doc.hdr_refs, "default");
+        let ftr_first = part(&doc.ftr_refs, "first");
+        let ftr_default = part(&doc.ftr_refs, "default");
+
+        // Reserve space so the body never overlaps a tall running header/footer.
+        let hdr_h = [&hdr_first, &hdr_default].iter().filter_map(|h| h.as_ref().map(|x| x.height)).fold(0.0f32, f32::max);
+        let ftr_h = [&ftr_first, &ftr_default].iter().filter_map(|f| f.as_ref().map(|x| x.height)).fold(0.0f32, f32::max);
+        let body_top = doc.margin_t.max(doc.header_dist + hdr_h + 8.0);
+        let body_bottom = doc.margin_b.max(doc.footer_dist + ftr_h + 8.0);
+        let cap = (doc.page_h - body_top - body_bottom).max(32.0);
 
         let mut pages = Vec::new();
         let mut start = 0;
@@ -1836,25 +1855,12 @@ impl DocxDoc {
         }
         pages.push(Page { start, end: lines.len(), top_y: page_top });
 
-        // Resolve + lay out header/footer parts (by reference type).
-        let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
-        let part = |refs: &[(String, String)], ty: &str| -> Option<HdrFtr> {
-            let id = refs.iter().find(|(t, _)| t == ty).map(|(_, id)| id)?;
-            let target = doc_rels.get(id)?;
-            let path = resolve_rel("word", target);
-            build_hdrftr(bytes, &path, font, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
-        };
-        let hdr_first = part(&doc.hdr_refs, "first");
-        let hdr_default = part(&doc.hdr_refs, "default");
-        let ftr_first = part(&doc.ftr_refs, "first");
-        let ftr_default = part(&doc.ftr_refs, "default");
-
         DocxDoc {
             lines,
             pages,
             page_w: doc.page_w,
             page_h: doc.page_h,
-            margin_t: doc.margin_t,
+            body_top,
             header_dist: doc.header_dist,
             footer_dist: doc.footer_dist,
             title_pg: doc.title_pg,
@@ -1895,7 +1901,7 @@ impl DocxDoc {
 
         for li in page.start..page.end {
             let line = &self.lines[li];
-            let local_top = self.margin_t + (line.top - page.top_y);
+            let local_top = self.body_top + (line.top - page.top_y);
             emit_line(&mut dl, line, (local_top + line.ascent) * scale, scale);
         }
         dl
