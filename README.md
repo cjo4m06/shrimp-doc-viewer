@@ -10,9 +10,12 @@ A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Wo
 >   Web Worker, virtualized + zoomable viewer.
 > - **XLSX — complete.** Self-written Rust grid: widths/heights/merges, styles,
 >   number formats, **sheet tabs + viewport virtualization + frozen headers + zoom**.
-> - **DOCX — near-complete.** Self-written flow layout: **paginated, virtualized,
->   zoomable** viewer; styles.xml inheritance (basedOn); lists/numbering; inline
->   images; bold/size/colour/alignment; CJK+Latin wrapping. *Remaining: tables.*
+> - **DOCX — complete (viewer-grade).** Self-written flow layout: **paginated,
+>   virtualized, zoomable** viewer; styles.xml inheritance; lists/numbering;
+>   **tables** (borders/shading/gridSpan/vMerge/vAlign); **headers/footers**
+>   (titlePg); rich runs (bold/italic/underline/strike/super-subscript/highlight/
+>   colour); paragraph spacing, tabs, breaks, borders, shading; inline images;
+>   CJK+Latin wrapping. Verified against a real 49-page manual.
 > - **PPTX — near-complete.** Self-written DrawingML: positioned text boxes, **preset
 >   shape geometry + custom geometry + outlines**, solid fills, **raster images**,
 >   run formatting, slide navigation. *Remaining: theme/master colour inheritance,
@@ -165,9 +168,16 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
   - **M4.3 ✅** styles.xml inheritance (docDefaults → basedOn chain → direct; Heading/Title).
   - **M4.4 ✅** lists/numbering (numbering.xml, (numId,ilvl) counters, %N, bullet/decimal/letter/roman, hanging indents).
   - **M4.5 ✅** inline images (`w:drawing` → blip → media → decode → Image).
-  - **M4.6 — tables (`w:tbl`). NOT done** — needs a flat→Block(Para|Table) parser
-    refactor (context stack for cell-nested paragraphs) + two-pass row heights,
-    gridSpan/vMerge, borders/shading. Highest-value remaining DOCX feature.
+  - **M4.6 ✅** tables (`w:tbl`): Block(Para|Table) model + cell context stack,
+    tblGrid columns, gridSpan/vMerge, table/cell borders + shading, row-atomic
+    pagination, cell vAlign.
+  - **M4.7 ✅** rich runs (italic/underline/strike/super+subscript/highlight),
+    paragraph spacing (w:spacing line/before/after), tabs, line/page breaks,
+    paragraph borders + shading.
+  - **M4.8 ✅** headers/footers (sectPr references + titlePg first-page), running
+    on every page; verified against a real 49-page manual (cover matches).
+  - *Remaining DOCX long tail: anchored-image exact positioning, text boxes
+    (w:txbxContent), tab dot-leaders, true per-font substitution.*
 - **M5 — PPTX viewer (self-written DrawingML).**
   - **M5.1 ✅** positioned text boxes + solid-fill rects, run formatting, slide nav (`PptxDeck`/`PptxViewer`).
   - **M5.2 ✅** raster images (`p:pic` → blip → media → decode → Image).
