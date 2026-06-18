@@ -172,11 +172,11 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
   - **M5.1 ✅** positioned text boxes + solid-fill rects, run formatting, slide nav (`PptxDeck`/`PptxViewer`).
   - **M5.2 ✅** raster images (`p:pic` → blip → media → decode → Image).
   - **M5.3 ✅** shape geometry: 12 presets + custGeom + outlines.
-  - **M5.4 — theme/master/layout inheritance. NOT done** — `schemeClr` via `clrMap`
-    + lumMod/lumOff/shade/tint; placeholder text-style cascade. Additive (no refactor).
+  - **M5.4 ✅** theme + master/layout inheritance: `schemeClr` via `clrMap` +
+    lumMod/lumOff/shade/tint; slide→layout→master→theme chain; master/layout
+    background decoration + bg colour; placeholder text-style cascade. Verified
+    against a real 11-slide deck (matches the reference render).
   - **M5.5 — tables (`a:tbl`). NOT done** — port of the DOCX table layout to EMU/DrawingML.
-- **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
-  wasm size pass (wasm-opt, drop unused features).
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 
