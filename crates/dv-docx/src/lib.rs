@@ -265,6 +265,7 @@ struct Float {
     img_h: f32,
     body_y: f32,  // anchor paragraph top in body coords (assigned at layout time)
     behind: bool, // behindDoc / wrapNone -> doesn't reserve body space
+    grouped: bool, // shapes came through a real <wpg> group (page-absolute coords)
 }
 
 struct Document {
@@ -646,7 +647,7 @@ fn parse_document(xml: &str) -> Document {
                     // ---- floating anchored drawings (text boxes / autoshapes) ----
                     b"wp:anchor" => {
                         let behind = get_attr(&e, b"behindDoc").as_deref() == Some("1");
-                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image_rid: None, image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0, behind });
+                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image_rid: None, image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0, behind, grouped: false });
                         gstack = vec![base_tf];
                         in_grpspr = false;
                     }
@@ -936,6 +937,9 @@ fn parse_document(xml: &str) -> Document {
                 }
                 b"wpg:grpSpPr" if cur_float.is_some() => {
                     in_grpspr = false;
+                    if let Some(f) = cur_float.as_mut() {
+                        f.grouped = true;
+                    }
                     let gsx = if g_xfrm[6] != 0.0 { g_xfrm[2] / g_xfrm[6] } else { 1.0 };
                     let gsy = if g_xfrm[7] != 0.0 { g_xfrm[3] / g_xfrm[7] } else { 1.0 };
                     let ltx = g_xfrm[0] - g_xfrm[4] * gsx;
@@ -1619,10 +1623,12 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
             if !fl.behind {
                 let fh = if fl.shapes.is_empty() {
                     fl.img_h
-                } else {
+                } else if fl.grouped {
                     let bot = fl.shapes.iter().map(|s| s.y + s.h).fold(f32::MIN, f32::max);
                     let topy = fl.shapes.iter().map(|s| s.y).fold(f32::MAX, f32::min);
                     (bot - topy).max(0.0)
+                } else {
+                    fl.shapes.iter().map(|s| s.h).fold(0.0, f32::max)
                 };
                 pending_reserve = pending_reserve.max(fl.off_y + fh + 8.0);
             }
@@ -2111,12 +2117,10 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
             clip: None,
         });
     }
-    // Group shapes carry page-absolute coords (from the group xfrm); a lone shape
-    // with no group uses the anchor offset.
-    let grouped = fl.shapes.iter().any(|s| s.x > fl.off_x + 64.0);
-    let _ = (fx, fy);
+    // Grouped shapes carry page-absolute coords (from the group xfrm); a lone shape
+    // sits at the anchor (its own a:off is canvas-relative / often stale, so ignore it).
     for sh in &fl.shapes {
-        let (sx, sy) = if grouped { (sh.x, sh.y) } else { (fx + sh.x, fy + sh.y) };
+        let (sx, sy) = if fl.grouped { (sh.x, sh.y) } else { (fx, fy) };
         if sh.is_line {
             if let Some((c, w)) = sh.outline {
                 let mut p = dv_ir::PathData::new();
