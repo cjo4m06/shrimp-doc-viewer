@@ -35,12 +35,54 @@ struct Run {
     text: String,
     size: f32, // px (at zoom 1)
     bold: bool,
+    underline: bool,
     color: Color,
 }
 
 struct Para {
     runs: Vec<Run>,
     align: Align,
+    ln_spc: f32,     // line-height multiple of font size (default 1.2)
+    ln_spc_pts: f32, // absolute line height px (>0 overrides ln_spc)
+    spc_bef: f32,    // space before paragraph (px)
+    spc_aft: f32,    // space after paragraph (px)
+    mar_l: f32,      // text left margin (px)
+    indent: f32,     // first-line indent relative to mar_l (px; negative = hanging)
+    bullet: Option<String>,
+}
+
+impl Default for Para {
+    fn default() -> Self {
+        Para {
+            runs: Vec::new(),
+            align: Align::Left,
+            ln_spc: 1.2,
+            ln_spc_pts: 0.0,
+            spc_bef: 0.0,
+            spc_aft: 0.0,
+            mar_l: 0.0,
+            indent: 0.0,
+            bullet: None,
+        }
+    }
+}
+
+/// Text-frame properties from `a:bodyPr`.
+#[derive(Clone, Copy)]
+struct Body {
+    anchor: u8, // 0=top, 1=center, 2=bottom
+    ins_l: f32,
+    ins_t: f32,
+    ins_r: f32,
+    ins_b: f32,
+    font_scale: f32, // normAutofit fontScale (1.0 = none)
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        // OOXML defaults: l/r = 0.1in (91440 EMU), t/b = 0.05in (45720 EMU)
+        Body { anchor: 0, ins_l: 9.6, ins_t: 4.8, ins_r: 9.6, ins_b: 4.8, font_scale: 1.0 }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -103,6 +145,7 @@ struct Shape {
     adj: Vec<i32>,
     custom: Vec<SubPath>,
     paras: Vec<Para>,
+    body: Body,
     image: Option<dv_image::DecodedImage>,
     is_ph: bool,
     flip_h: bool,
@@ -676,41 +719,113 @@ impl Deck {
     }
 
     fn layout_shape_text(&self, dl: &mut DisplayList, font: &FontData, sh: &Shape, scale: f32) {
-        let pad = 7.0 * scale;
-        let left = sh.x * scale + pad;
-        let content_w = (sh.w * scale - 2.0 * pad).max(8.0);
-        let mut y = sh.y * scale + pad;
+        let b = &sh.body;
+        let fs = b.font_scale;
+        let left = (sh.x + b.ins_l) * scale;
+        let content_w = ((sh.w - b.ins_l - b.ins_r) * scale).max(8.0);
+        let top = (sh.y + b.ins_t) * scale;
+        let content_h = ((sh.h - b.ins_t - b.ins_b) * scale).max(0.0);
+
+        struct LLine {
+            items: Vec<Item>,
+            h: f32,
+            asc: f32,
+            gap: f32, // space before this line (paragraph spacing)
+            align: Align,
+            mar_l: f32,
+            indent: f32,
+            bullet: Option<(String, f32, Color)>,
+        }
+        let mut lines: Vec<LLine> = Vec::new();
+        let mut total = 0.0f32;
+        let mut pending = 0.0f32;
 
         for para in &sh.paras {
-            let items = shape_para(font, para, scale);
-            if items.is_empty() {
-                y += 18.0 * scale;
-                continue;
+            pending += para.spc_bef * scale;
+            let bullet = para.bullet.as_ref().filter(|c| !c.is_empty()).map(|c| {
+                let sz = para.runs.first().map(|r| r.size).unwrap_or(18.0) * scale * fs;
+                let col = para.runs.first().map(|r| r.color).unwrap_or(Color::BLACK);
+                (c.clone(), sz, col)
+            });
+            let text_w = (content_w - para.mar_l * scale).max(8.0);
+            let items = shape_para(font, para, scale, fs);
+            let wrapped = if items.is_empty() { vec![Vec::new()] } else { wrap(items, text_w) };
+            for (li, line) in wrapped.into_iter().enumerate() {
+                let max_size = line.iter().map(|i| i.size).fold(14.0 * scale * fs, f32::max);
+                let h = if para.ln_spc_pts > 0.0 { para.ln_spc_pts * scale } else { max_size * para.ln_spc };
+                let gap = if li == 0 { std::mem::take(&mut pending) } else { 0.0 };
+                total += gap + h;
+                lines.push(LLine {
+                    items: line,
+                    h,
+                    asc: max_size * 0.8,
+                    gap,
+                    align: para.align,
+                    mar_l: para.mar_l * scale,
+                    indent: para.indent * scale,
+                    bullet: if li == 0 { bullet.clone() } else { None },
+                });
             }
-            for line in wrap(items, content_w) {
-                let max_size = line.iter().map(|i| i.size).fold(8.0 * scale, f32::max);
-                let line_h = max_size * 1.3;
-                let baseline = y + max_size * 0.88;
-                let lw = line_width(&line);
-                let x_start = match para.align {
-                    Align::Left => left,
-                    Align::Center => left + (content_w - lw) / 2.0,
-                    Align::Right => left + (content_w - lw),
-                };
-                let mut x = x_start;
-                let mut i = 0;
-                while i < line.len() {
-                    let (size, color, bold) = (line[i].size, line[i].color, line[i].bold);
-                    let mut glyphs = Vec::new();
-                    while i < line.len() && line[i].size == size && line[i].color == color && line[i].bold == bold {
-                        glyphs.push(PositionedGlyph { id: line[i].gid, x: x + line[i].x_off, y: baseline });
-                        x += line[i].advance;
-                        i += 1;
-                    }
-                    dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size, paint: Paint::Solid(color), bold, glyphs }));
+            pending += para.spc_aft * scale;
+        }
+
+        // Vertical anchor of the whole text block within the content box.
+        let mut y = match b.anchor {
+            1 => top + (content_h - total) / 2.0,
+            2 => top + (content_h - total),
+            _ => top,
+        };
+        if y < top {
+            y = top;
+        }
+
+        for ln in &lines {
+            y += ln.gap;
+            let baseline = y + ln.asc;
+            let text_left = left + ln.mar_l;
+            let text_w = (content_w - ln.mar_l).max(8.0);
+            let lw = line_width(&ln.items);
+            let x_start = match ln.align {
+                Align::Left => text_left,
+                Align::Center => text_left + (text_w - lw) / 2.0,
+                Align::Right => text_left + (text_w - lw),
+            };
+            // Bullet (hangs at text_left + indent).
+            if let Some((ch, bsz, bcol)) = &ln.bullet {
+                let shaped = shape(font, ch, *bsz);
+                let s = *bsz / shaped.units_per_em.max(1.0);
+                let mut bx = text_left + ln.indent;
+                let mut glyphs = Vec::new();
+                for g in &shaped.glyphs {
+                    glyphs.push(PositionedGlyph { id: g.glyph_id, x: bx + g.x_offset * s, y: baseline });
+                    bx += g.x_advance * s;
                 }
-                y += line_h;
+                dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: *bsz, paint: Paint::Solid(*bcol), bold: false, glyphs }));
             }
+            // Glyph runs grouped by style; underline drawn per underlined span.
+            let mut x = x_start;
+            let mut i = 0;
+            while i < ln.items.len() {
+                let (size, color, bold, ul) = (ln.items[i].size, ln.items[i].color, ln.items[i].bold, ln.items[i].underline);
+                let run_x0 = x;
+                let mut glyphs = Vec::new();
+                while i < ln.items.len()
+                    && ln.items[i].size == size
+                    && ln.items[i].color == color
+                    && ln.items[i].bold == bold
+                    && ln.items[i].underline == ul
+                {
+                    glyphs.push(PositionedGlyph { id: ln.items[i].gid, x: x + ln.items[i].x_off, y: baseline });
+                    x += ln.items[i].advance;
+                    i += 1;
+                }
+                dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size, paint: Paint::Solid(color), bold, glyphs }));
+                if ul && x > run_x0 {
+                    let uy = baseline + size * 0.12;
+                    dl.push(fill_rect(run_x0, uy, x - run_x0, (size * 0.06).max(1.0), color));
+                }
+            }
+            y += ln.h;
         }
     }
 }
@@ -814,7 +929,7 @@ fn parse_part_shapes(
     let mut in_bg = false;
     let mut in_ln = false;
     let mut cur_para: Option<Para> = None;
-    let mut cur_align = Align::Left;
+    let mut spc_target: u8 = 0; // 1=lnSpc 2=spcBef 3=spcAft
     let mut cur_run: Option<Run> = None;
     let mut in_t = false;
     // custom geometry state
@@ -850,6 +965,7 @@ fn parse_part_shapes(
                         adj: Vec::new(),
                         custom: Vec::new(),
                         paras: Vec::new(),
+                        body: Body::default(),
                         image: None,
                         is_ph: false,
                         flip_h: false,
@@ -1051,22 +1167,91 @@ fn parse_part_shapes(
                         sp.cmds.push(PathVerb::Close);
                     }
                 }
+                b"a:bodyPr" => {
+                    if let Some(s) = cur.as_mut() {
+                        s.body.anchor = match get_attr(&e, b"anchor").as_deref() {
+                            Some("ctr") => 1,
+                            Some("b") => 2,
+                            _ => 0,
+                        };
+                        let emu = |k: &[u8]| get_attr(&e, k).and_then(|v| v.parse::<f32>().ok()).map(|x| x / EMU_PER_PX);
+                        if let Some(v) = emu(b"lIns") {
+                            s.body.ins_l = v;
+                        }
+                        if let Some(v) = emu(b"tIns") {
+                            s.body.ins_t = v;
+                        }
+                        if let Some(v) = emu(b"rIns") {
+                            s.body.ins_r = v;
+                        }
+                        if let Some(v) = emu(b"bIns") {
+                            s.body.ins_b = v;
+                        }
+                    }
+                }
+                b"a:normAutofit" => {
+                    if let Some(s) = cur.as_mut() {
+                        if let Some(fs) = get_attr(&e, b"fontScale").and_then(|v| v.parse::<f32>().ok()) {
+                            s.body.font_scale = fs / 100000.0;
+                        }
+                    }
+                }
                 b"a:p" => {
-                    cur_align = Align::Left;
-                    cur_para = Some(Para { runs: Vec::new(), align: Align::Left });
+                    cur_para = Some(Para::default());
                 }
                 b"a:pPr" => {
-                    cur_align = match get_attr(&e, b"algn").as_deref() {
-                        Some("ctr") => Align::Center,
-                        Some("r") => Align::Right,
-                        _ => Align::Left,
-                    };
+                    if let Some(p) = cur_para.as_mut() {
+                        p.align = match get_attr(&e, b"algn").as_deref() {
+                            Some("ctr") => Align::Center,
+                            Some("r") => Align::Right,
+                            _ => Align::Left,
+                        };
+                        if let Some(v) = get_attr(&e, b"marL").and_then(|v| v.parse::<f32>().ok()) {
+                            p.mar_l = v / EMU_PER_PX;
+                        }
+                        if let Some(v) = get_attr(&e, b"indent").and_then(|v| v.parse::<f32>().ok()) {
+                            p.indent = v / EMU_PER_PX;
+                        }
+                    }
+                }
+                b"a:lnSpc" => spc_target = 1,
+                b"a:spcBef" => spc_target = 2,
+                b"a:spcAft" => spc_target = 3,
+                b"a:spcPct" => {
+                    // Percent applies to line spacing; spcBef/spcAft percent is rare -> ignored.
+                    if spc_target == 1 {
+                        if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok())) {
+                            p.ln_spc = v / 100000.0;
+                        }
+                    }
+                }
+                b"a:spcPts" => {
+                    if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok())) {
+                        let px = v / 75.0; // hundredths-of-point -> px
+                        match spc_target {
+                            1 => p.ln_spc_pts = px,
+                            2 => p.spc_bef = px,
+                            3 => p.spc_aft = px,
+                            _ => {}
+                        }
+                    }
+                }
+                b"a:buNone" => {
+                    if let Some(p) = cur_para.as_mut() {
+                        p.bullet = None;
+                    }
+                }
+                b"a:buChar" => {
+                    if let Some(p) = cur_para.as_mut() {
+                        p.bullet = get_attr(&e, b"char");
+                    }
                 }
                 b"a:r" => {
                     cur_run = Some(Run {
                         text: String::new(),
                         size: cur_ph.size.unwrap_or(24.0),
                         bold: cur_ph.bold.unwrap_or(false),
+                        underline: false,
                         color: cur_ph.color.unwrap_or(Color::BLACK),
                     })
                 }
@@ -1078,6 +1263,9 @@ fn parse_part_shapes(
                         }
                         if let Some(b) = get_attr(&e, b"b") {
                             r.bold = b == "1";
+                        }
+                        if let Some(u) = get_attr(&e, b"u") {
+                            r.underline = u != "none";
                         }
                     }
                 }
@@ -1156,6 +1344,7 @@ fn parse_part_shapes(
                     }
                 }
                 b"a:t" => in_t = false,
+                b"a:lnSpc" | b"a:spcBef" | b"a:spcAft" => spc_target = 0,
                 b"a:r" => {
                     if let (Some(p), Some(r)) = (cur_para.as_mut(), cur_run.take()) {
                         if !r.text.is_empty() {
@@ -1164,8 +1353,7 @@ fn parse_part_shapes(
                     }
                 }
                 b"a:p" => {
-                    if let (Some(s), Some(mut p)) = (cur.as_mut(), cur_para.take()) {
-                        p.align = cur_align;
+                    if let (Some(s), Some(p)) = (cur.as_mut(), cur_para.take()) {
                         s.paras.push(p);
                     }
                 }
@@ -1206,14 +1394,15 @@ struct Item {
     size: f32,
     color: Color,
     bold: bool,
+    underline: bool,
     break_after: bool,
     is_space: bool,
 }
 
-fn shape_para(font: &FontData, para: &Para, scale: f32) -> Vec<Item> {
+fn shape_para(font: &FontData, para: &Para, scale: f32, font_scale: f32) -> Vec<Item> {
     let mut items = Vec::new();
     for run in &para.runs {
-        let px = run.size * scale;
+        let px = run.size * scale * font_scale;
         let shaped = shape(font, &run.text, px);
         let s = px / shaped.units_per_em.max(1.0);
         for g in &shaped.glyphs {
@@ -1226,6 +1415,7 @@ fn shape_para(font: &FontData, para: &Para, scale: f32) -> Vec<Item> {
                 size: px,
                 color: run.color,
                 bold: run.bold,
+                underline: run.underline,
                 break_after: is_space || is_cjk(ch),
                 is_space,
             });
