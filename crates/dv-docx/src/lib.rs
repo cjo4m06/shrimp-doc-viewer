@@ -68,8 +68,16 @@ struct Para {
     runs: Vec<Run>,
     direct: PPr,
     p_style: Option<String>,
-    // resolved by resolve_document():
+    // list/numbering (from w:numPr) + direct indents (twips→px):
+    num_id: Option<u32>,
+    num_ilvl: u32,
+    d_ind_left: Option<f32>,
+    d_ind_hanging: Option<f32>,
+    // resolved:
     align: Align,
+    marker: Option<String>, // bullet/number prefix
+    indent: f32,            // body left indent (px)
+    hanging: f32,           // first-line marker hang (px)
 }
 
 struct Document {
@@ -137,7 +145,37 @@ fn parse_document(xml: &str) -> Document {
                 e: &BytesStart| {
         match e.name().as_ref() {
             b"w:p" => {
-                *cur_para = Some(Para { runs: Vec::new(), direct: PPr::default(), p_style: None, align: Align::Left });
+                *cur_para = Some(Para {
+                    runs: Vec::new(),
+                    direct: PPr::default(),
+                    p_style: None,
+                    num_id: None,
+                    num_ilvl: 0,
+                    d_ind_left: None,
+                    d_ind_hanging: None,
+                    align: Align::Left,
+                    marker: None,
+                    indent: 0.0,
+                    hanging: 0.0,
+                });
+            }
+            b"w:numId" => {
+                if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                    p.num_id = Some(v);
+                }
+            }
+            b"w:ilvl" => {
+                if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                    p.num_ilvl = v;
+                }
+            }
+            b"w:ind" => {
+                if let Some(p) = cur_para.as_mut() {
+                    if cur_run.is_none() {
+                        p.d_ind_left = get_attr(e, b"w:left").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                        p.d_ind_hanging = get_attr(e, b"w:hanging").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                    }
+                }
             }
             b"w:pStyle" => {
                 // Only the paragraph-level pStyle (in pPr, before any run).
@@ -319,6 +357,239 @@ fn line_width(line: &[Item]) -> f32 {
     line[..end].iter().map(|i| i.advance).sum()
 }
 
+// --- numbering.xml (lists) -------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum NumFmt {
+    Decimal,
+    DecimalZero,
+    LowerLetter,
+    UpperLetter,
+    LowerRoman,
+    UpperRoman,
+    Bullet,
+    None_,
+}
+
+#[derive(Clone)]
+struct Lvl {
+    fmt: NumFmt,
+    text: String,
+    start: i32,
+    ind_left: Option<f32>,
+    ind_hanging: Option<f32>,
+}
+
+#[derive(Default)]
+struct Numbering {
+    num_to_abstract: HashMap<u32, u32>,
+    abstracts: HashMap<u32, HashMap<u32, Lvl>>, // abstractNumId -> ilvl -> Lvl
+}
+
+fn num_fmt(s: &str) -> NumFmt {
+    match s {
+        "decimalZero" => NumFmt::DecimalZero,
+        "lowerLetter" => NumFmt::LowerLetter,
+        "upperLetter" => NumFmt::UpperLetter,
+        "lowerRoman" => NumFmt::LowerRoman,
+        "upperRoman" => NumFmt::UpperRoman,
+        "bullet" => NumFmt::Bullet,
+        "none" => NumFmt::None_,
+        _ => NumFmt::Decimal,
+    }
+}
+
+fn parse_numbering_xml(xml: &str) -> Numbering {
+    let mut nb = Numbering::default();
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut cur_abstract: Option<u32> = None;
+    let mut cur_ilvl: Option<u32> = None;
+    let mut cur_lvl: Option<Lvl> = None;
+    let mut cur_num: Option<u32> = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
+                b"w:abstractNum" => cur_abstract = get_attr(&e, b"w:abstractNumId").and_then(|s| s.parse().ok()),
+                b"w:lvl" => {
+                    cur_ilvl = get_attr(&e, b"w:ilvl").and_then(|s| s.parse().ok());
+                    cur_lvl = Some(Lvl { fmt: NumFmt::Decimal, text: String::new(), start: 1, ind_left: None, ind_hanging: None });
+                }
+                b"w:start" => {
+                    if let (Some(l), Some(v)) = (cur_lvl.as_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse().ok())) {
+                        l.start = v;
+                    }
+                }
+                b"w:numFmt" => {
+                    if let (Some(l), Some(v)) = (cur_lvl.as_mut(), get_attr(&e, b"w:val")) {
+                        l.fmt = num_fmt(&v);
+                    }
+                }
+                b"w:lvlText" => {
+                    if let (Some(l), Some(v)) = (cur_lvl.as_mut(), get_attr(&e, b"w:val")) {
+                        l.text = v;
+                    }
+                }
+                b"w:ind" => {
+                    if let Some(l) = cur_lvl.as_mut() {
+                        l.ind_left = get_attr(&e, b"w:left").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                        l.ind_hanging = get_attr(&e, b"w:hanging").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                    }
+                }
+                b"w:num" => cur_num = get_attr(&e, b"w:numId").and_then(|s| s.parse().ok()),
+                b"w:abstractNumId" => {
+                    if let (Some(n), Some(a)) = (cur_num, get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                        nb.num_to_abstract.insert(n, a);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"w:lvl" => {
+                    if let (Some(a), Some(il), Some(l)) = (cur_abstract, cur_ilvl.take(), cur_lvl.take()) {
+                        nb.abstracts.entry(a).or_default().insert(il, l);
+                    }
+                }
+                b"w:abstractNum" => cur_abstract = None,
+                b"w:num" => cur_num = None,
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    nb
+}
+
+fn fmt_counter(fmt: NumFmt, v: i32) -> String {
+    match fmt {
+        NumFmt::DecimalZero => {
+            if (0..10).contains(&v) {
+                format!("0{v}")
+            } else {
+                v.to_string()
+            }
+        }
+        NumFmt::LowerLetter => alpha(v, false),
+        NumFmt::UpperLetter => alpha(v, true),
+        NumFmt::LowerRoman => roman(v, false),
+        NumFmt::UpperRoman => roman(v, true),
+        _ => v.to_string(),
+    }
+}
+
+fn alpha(mut v: i32, upper: bool) -> String {
+    if v <= 0 {
+        return v.to_string();
+    }
+    let mut s = Vec::new();
+    while v > 0 {
+        v -= 1;
+        s.push((b'a' + (v % 26) as u8) as char);
+        v /= 26;
+    }
+    let out: String = s.into_iter().rev().collect();
+    if upper {
+        out.to_uppercase()
+    } else {
+        out
+    }
+}
+
+fn roman(v: i32, upper: bool) -> String {
+    if v <= 0 {
+        return v.to_string();
+    }
+    const T: [(i32, &str); 13] = [
+        (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
+        (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"),
+    ];
+    let mut n = v;
+    let mut out = String::new();
+    for (val, sym) in T {
+        while n >= val {
+            out.push_str(sym);
+            n -= val;
+        }
+    }
+    if upper {
+        out.to_uppercase()
+    } else {
+        out
+    }
+}
+
+fn bullet_char(text: &str) -> String {
+    let c = text.chars().next().unwrap_or('\u{2022}');
+    let mapped = match c as u32 {
+        0xF0B7 => '\u{2022}', // •
+        0xF0A7 => '\u{25AA}', // ▪
+        0xF06F => '\u{25CB}', // ○
+        _ => c,
+    };
+    mapped.to_string()
+}
+
+fn substitute(text: &str, num_id: u32, abstract_id: u32, nb: &Numbering, counters: &HashMap<(u32, u32), i32>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '%' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+            let ref_ilvl = chars[i + 1].to_digit(10).unwrap().saturating_sub(1);
+            let lvl = nb.abstracts.get(&abstract_id).and_then(|m| m.get(&ref_ilvl));
+            let val = counters.get(&(num_id, ref_ilvl)).copied().unwrap_or_else(|| lvl.map(|l| l.start).unwrap_or(1));
+            let fmt = lvl.map(|l| l.fmt).unwrap_or(NumFmt::Decimal);
+            out.push_str(&fmt_counter(fmt, val));
+            i += 2;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Walk paragraphs in order, maintaining per-(numId,ilvl) counters, and bake
+/// each list paragraph's marker + indents.
+fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
+    let mut counters: HashMap<(u32, u32), i32> = HashMap::new();
+    for para in &mut doc.paras {
+        let num_id = match para.num_id {
+            Some(n) if n != 0 => n,
+            _ => continue,
+        };
+        let ilvl = para.num_ilvl;
+        let abstract_id = match nb.num_to_abstract.get(&num_id) {
+            Some(a) => *a,
+            None => continue,
+        };
+        let lvl = match nb.abstracts.get(&abstract_id).and_then(|m| m.get(&ilvl)) {
+            Some(l) => l.clone(),
+            None => continue,
+        };
+
+        let entry = counters.entry((num_id, ilvl)).or_insert(lvl.start - 1);
+        *entry += 1;
+        // reset deeper levels of this list
+        let deeper: Vec<(u32, u32)> = counters.keys().filter(|(n, l)| *n == num_id && *l > ilvl).copied().collect();
+        for k in deeper {
+            counters.remove(&k);
+        }
+
+        let marker = match lvl.fmt {
+            NumFmt::Bullet => bullet_char(&lvl.text),
+            NumFmt::None_ => String::new(),
+            _ => substitute(&lvl.text, num_id, abstract_id, nb, &counters),
+        };
+        para.marker = if marker.is_empty() { None } else { Some(marker) };
+        para.indent = para.d_ind_left.or(lvl.ind_left).unwrap_or(((ilvl + 1) as f32) * 36.0);
+        para.hanging = para.d_ind_hanging.or(lvl.ind_hanging).unwrap_or(18.0);
+    }
+}
+
 /// One glyph placed on a line, page-relative x (at zoom 1), with paint style.
 #[derive(Clone, Copy)]
 struct PlacedGlyph {
@@ -340,11 +611,12 @@ struct Line {
 
 /// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
 fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
-    let content_w = (doc.page_w - doc.margin_l - doc.margin_r).max(32.0);
     let mut lines = Vec::new();
     let mut top = 0.0f32;
 
     for para in &doc.paras {
+        let body_left = doc.margin_l + para.indent;
+        let content_w = (doc.page_w - doc.margin_r - body_left).max(32.0);
         let items = shape_para(font, para);
         if items.is_empty() {
             let line_h = DEFAULT_SIZE_PX * 1.4;
@@ -360,11 +632,27 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
             let line_h = max_size * 1.4;
             let lw = line_width(line);
             let mut x = match para.align {
-                Align::Left => doc.margin_l,
-                Align::Center => doc.margin_l + (content_w - lw) / 2.0,
-                Align::Right => doc.margin_l + (content_w - lw),
+                Align::Left => body_left,
+                Align::Center => body_left + (content_w - lw) / 2.0,
+                Align::Right => body_left + (content_w - lw),
             };
-            let mut placed = Vec::with_capacity(line.len());
+            let mut placed = Vec::with_capacity(line.len() + 4);
+
+            // List marker on the first line, hung to the left of the body text.
+            if li == 0 {
+                if let Some(marker) = &para.marker {
+                    let msize = para.runs.first().map(|r| r.size).unwrap_or(DEFAULT_SIZE_PX);
+                    let mcolor = para.runs.first().map(|r| r.color).unwrap_or(Color::BLACK);
+                    let shaped = shape(font, marker, msize);
+                    let sc = msize / shaped.units_per_em.max(1.0);
+                    let mut mx = body_left - para.hanging;
+                    for g in &shaped.glyphs {
+                        placed.push(PlacedGlyph { id: g.glyph_id, x: mx + g.x_offset * sc, size: msize, color: mcolor, bold: false });
+                        mx += g.x_advance * sc;
+                    }
+                }
+            }
+
             for it in line {
                 placed.push(PlacedGlyph { id: it.gid, x: x + it.x_off, size: it.size, color: it.color, bold: it.bold });
                 x += it.advance;
@@ -400,6 +688,8 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
     let mut doc = parse_document(&xml);
     let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
     resolve_document(&mut doc, &table);
+    let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
+    resolve_numbering(&mut doc, &numbering);
     let lines = layout_lines(&doc, font);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
@@ -437,6 +727,8 @@ impl DocxDoc {
         });
         let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
         resolve_document(&mut doc, &table);
+        let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
+        resolve_numbering(&mut doc, &numbering);
         let lines = layout_lines(&doc, font);
         let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
 

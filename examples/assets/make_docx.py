@@ -17,8 +17,8 @@ PARAS = [
     ("center", [("doc-viewer 文件檢視器", True, 48, "1F6FEB")]),
     # pStyle inheritance test: runs carry NO direct rPr, so bold/colour/size come
     # entirely from the styles.xml Heading1/Heading2 definitions (H2 basedOn H1).
-    ("left", [("樣式繼承 Heading1(粗體+藍+大字,皆繼承自樣式)", False, None, None)], "Heading1"),
-    ("left", [("樣式繼承 Heading2(basedOn H1:繼承粗體+藍,字級改小)", False, None, None)], "Heading2"),
+    ("left", [("樣式繼承 Heading1(粗體+藍+大字,皆繼承自樣式)", False, None, None)], {"pstyle": "Heading1"}),
+    ("left", [("樣式繼承 Heading2(basedOn H1:繼承粗體+藍,字級改小)", False, None, None)], {"pstyle": "Heading2"}),
     ("left", [("一、繁體中文流式排版測試", True, 32, None)]),
     ("both", [
         ("這是一段較長的內文,用來測試自動換行(line wrapping)。", False, 24, None),
@@ -34,6 +34,15 @@ PARAS = [
         ("顏色", False, 24, "1F6FEB"),
         (" 與段落對齊(左/中/右/兩端)。", False, 24, None),
     ]),
+    ("left", [("三、清單與編號測試", True, 32, None)]),
+    ("left", [("項目符號一", False, 24, None)], {"numId": 2, "ilvl": 0}),
+    ("left", [("項目符號二", False, 24, None)], {"numId": 2, "ilvl": 0}),
+    ("left", [("項目符號三", False, 24, None)], {"numId": 2, "ilvl": 0}),
+    ("left", [("第一點(decimal)", False, 24, None)], {"numId": 1, "ilvl": 0}),
+    ("left", [("第二點", False, 24, None)], {"numId": 1, "ilvl": 0}),
+    ("left", [("子項目(lowerLetter a)", False, 24, None)], {"numId": 1, "ilvl": 1}),
+    ("left", [("子項目(lowerLetter b)", False, 24, None)], {"numId": 1, "ilvl": 1}),
+    ("left", [("第三點(計數延續,應為 3.)", False, 24, None)], {"numId": 1, "ilvl": 0}),
     ("right", [("— 完 —", False, 24, "888888")]),
 ]
 
@@ -53,6 +62,7 @@ CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
 </Types>"""
 
 RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -80,11 +90,27 @@ STYLES = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Heading1"/><w:rPr><w:sz w:val="28"/></w:rPr></w:style>
 </w:styles>"""
 
+NUMBERING = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="{W}">
+<w:abstractNum w:abstractNumId="0">
+<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:pPr><w:ind w:left="480" w:hanging="360"/></w:pPr></w:lvl>
+<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/><w:pPr><w:ind w:left="960" w:hanging="360"/></w:pPr></w:lvl>
+</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">
+<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:pPr><w:ind w:left="480" w:hanging="360"/></w:pPr></w:lvl>
+</w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>"""
 
-def para_xml(align, runs, pstyle=None):
+
+def para_xml(align, runs, opts=None):
+    opts = opts or {}
     ppr = "<w:pPr>"
-    if pstyle:
-        ppr += f'<w:pStyle w:val="{pstyle}"/>'
+    if opts.get("pstyle"):
+        ppr += f'<w:pStyle w:val="{opts["pstyle"]}"/>'
+    if "numId" in opts:
+        ppr += f'<w:numPr><w:ilvl w:val="{opts.get("ilvl", 0)}"/><w:numId w:val="{opts["numId"]}"/></w:numPr>'
     ppr += f'<w:jc w:val="{align}"/></w:pPr>'
     body = "".join(run_xml(*r) for r in runs)
     return f"<w:p>{ppr}{body}</w:p>"
@@ -105,6 +131,7 @@ def main(path):
         z.writestr("_rels/.rels", RELS)
         z.writestr("word/document.xml", document)
         z.writestr("word/styles.xml", STYLES)
+        z.writestr("word/numbering.xml", NUMBERING)
     print("wrote", path)
 
 
