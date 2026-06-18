@@ -108,10 +108,11 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
 
                 // Faux-bold: stroke the outline on top of the fill to thicken it.
                 // The path is in font units and the per-glyph transform scales by
-                // `scale`, so express the ~0.045·em px target in font units.
+                // `scale`, so express the ~0.07·em px target in font units. (Heavier
+                // than a hairline so CJK bold reads as bold, approximating 標楷體 bold.)
                 let bold_stroke = if run.bold {
                     Some(Stroke {
-                        width: run.size * 0.045 / scale,
+                        width: run.size * 0.07 / scale,
                         line_cap: LineCap::Round,
                         line_join: LineJoin::Round,
                         ..Stroke::default()

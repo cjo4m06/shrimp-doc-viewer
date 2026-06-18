@@ -125,6 +125,10 @@ struct Para {
     shd: Option<Color>,
     tab_stops: Vec<(f32, Align)>, // (position px, alignment)
     page_break_before: bool,
+    page_break_after: bool, // a w:br type=page / mid-doc sectPr forces a new page after
+    d_ind_right: f32,       // right indent (px)
+    d_ind_first: f32,       // first-line indent (px, mutually exclusive with hanging)
+    keep_lines: bool,
     // floating anchored drawings attached to this paragraph
     floats: Vec<Float>,
     // resolved:
@@ -156,6 +160,10 @@ impl Default for Para {
             shd: None,
             tab_stops: Vec::new(),
             page_break_before: false,
+            page_break_after: false,
+            d_ind_right: 0.0,
+            d_ind_first: 0.0,
+            keep_lines: false,
             floats: Vec::new(),
             align: Align::Left,
             marker: None,
@@ -381,8 +389,24 @@ fn parse_document(xml: &str) -> Document {
             b"w:ind" => {
                 if let Some(p) = cur_para.as_mut() {
                     if cur_run.is_none() {
-                        p.d_ind_left = get_attr(e, b"w:left").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
-                        p.d_ind_hanging = get_attr(e, b"w:hanging").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                        let pick = |a: &[u8]| get_attr(e, a).and_then(|s| s.parse::<f32>().ok());
+                        p.d_ind_left = pick(b"w:left").or_else(|| pick(b"w:start"));
+                        p.d_ind_hanging = pick(b"w:hanging");
+                        if let Some(v) = pick(b"w:right").or_else(|| pick(b"w:end")) {
+                            p.d_ind_right = v * TWIP_TO_PX;
+                        }
+                        if let Some(v) = pick(b"w:firstLine") {
+                            p.d_ind_first = v * TWIP_TO_PX;
+                        }
+                        p.d_ind_left = p.d_ind_left.map(|v| v * TWIP_TO_PX);
+                        p.d_ind_hanging = p.d_ind_hanging.map(|v| v * TWIP_TO_PX);
+                    }
+                }
+            }
+            b"w:keepLines" | b"w:keepNext" => {
+                if let Some(p) = cur_para.as_mut() {
+                    if cur_run.is_none() && !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")) {
+                        p.keep_lines = true;
                     }
                 }
             }
@@ -501,11 +525,18 @@ fn parse_document(xml: &str) -> Document {
                     r.text.push('\t');
                 }
             }
-            b"w:br" => {
-                if let Some(r) = cur_run.as_mut() {
-                    r.text.push('\n');
+            b"w:br" => match get_attr(e, b"w:type").as_deref() {
+                Some("page") | Some("column") => {
+                    if let Some(p) = cur_para.as_mut() {
+                        p.page_break_after = true; // forces the next paragraph onto a new page
+                    }
                 }
-            }
+                _ => {
+                    if let Some(r) = cur_run.as_mut() {
+                        r.text.push('\n');
+                    }
+                }
+            },
             b"w:pageBreakBefore" => {
                 if let Some(p) = cur_para.as_mut() {
                     p.page_break_before = !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off"));
@@ -1377,7 +1408,12 @@ fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
     for para in paras {
         let num_id = match para.num_id {
             Some(n) if n != 0 => n,
-            _ => continue,
+            // Non-numbered paragraph: still honour its direct left/hanging indent.
+            _ => {
+                para.indent = para.d_ind_left.unwrap_or(0.0);
+                para.hanging = para.d_ind_hanging.unwrap_or(0.0);
+                continue;
+            }
         };
         let ilvl = para.num_ilvl;
         let abstract_id = match nb.num_to_abstract.get(&num_id) {
@@ -1456,6 +1492,8 @@ struct Line {
     bdr_bottom: Option<(Color, f32)>,
     left: f32,
     right: f32,
+    force_break_before: bool, // start a new page before this line
+    keep_lines: bool,         // keep with the next line (no break between)
 }
 
 /// Line height for a paragraph given the line's max font size. `auto` line
@@ -1532,6 +1570,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
     let mut lines = Vec::new();
     let mut floats: Vec<Float> = Vec::new();
     let mut top = 0.0f32;
+    let mut pending_break = false; // a preceding w:br page / page_break_after
     let (page_w, margin_l, margin_r) = (doc.page_w, doc.margin_l, doc.margin_r);
 
     for block in &mut doc.blocks {
@@ -1542,9 +1581,12 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 continue;
             }
         };
+        let mut consume_break = pending_break || para.page_break_before;
+        pending_break = para.page_break_after;
+        let kl = para.keep_lines;
         let body_left = margin_l + para.indent;
-        let content_w = (page_w - margin_r - body_left).max(32.0);
-        let right = page_w - margin_r;
+        let content_w = (page_w - margin_r - para.d_ind_right - body_left).max(32.0);
+        let right = page_w - margin_r - para.d_ind_right;
         top += para.spc_before;
         // Floating anchored drawings attached here: position at the paragraph top
         // and pre-lay-out each shape's text-box glyphs (so rendering needs no font).
@@ -1585,6 +1627,8 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 bdr_bottom: None,
                 left: body_left,
                 right,
+                force_break_before: std::mem::take(&mut consume_break),
+                keep_lines: kl,
             });
             top += h + space;
             if !has_text {
@@ -1612,6 +1656,8 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 bdr_bottom,
                 left: body_left,
                 right,
+                force_break_before: std::mem::take(&mut consume_break),
+                keep_lines: kl,
             });
             top += line_h + para.spc_after;
             continue;
@@ -1622,8 +1668,10 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
             let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
+            // first-line indent (only li==0, left-aligned, no list marker)
+            let fl_ind = if li == 0 && para.align == Align::Left && para.marker.is_none() { para.d_ind_first } else { 0.0 };
             let x = match para.align {
-                Align::Left => body_left,
+                Align::Left => body_left + fl_ind,
                 Align::Center => body_left + (content_w - lw) / 2.0,
                 Align::Right => body_left + (content_w - lw),
             };
@@ -1670,6 +1718,8 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 bdr_bottom: if li + 1 == n { bdr_bottom } else { None },
                 left: body_left,
                 right,
+                force_break_before: if li == 0 { std::mem::take(&mut consume_break) } else { false },
+                keep_lines: kl && li + 1 < n,
             });
             top += advance;
         }
@@ -1838,6 +1888,8 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             bdr_bottom: None,
             left: table_left,
             right: table_left + col_x[ncols],
+            force_break_before: false,
+            keep_lines: !row.is_header && false,
         });
         top += row_h;
     }
@@ -2155,11 +2207,24 @@ impl DocxDoc {
         let mut used = 0.0f32;
         let mut page_top = 0.0f32;
         for (i, line) in lines.iter().enumerate() {
-            if used > 0.0 && used + line.line_h > cap {
-                pages.push(Page { start, end: i, top_y: page_top });
-                start = i;
-                used = 0.0;
-                page_top = line.top;
+            // Force a new page on an explicit break, else when the line overflows.
+            if used > 0.0 && (line.force_break_before || used + line.line_h > cap) {
+                // keep-with-next: pull a kept group (bounded) onto the next page.
+                let mut bp = i;
+                if !line.force_break_before {
+                    let mut steps = 0;
+                    while bp > start && lines[bp - 1].keep_lines && steps < 12 {
+                        bp -= 1;
+                        steps += 1;
+                    }
+                    if bp == start {
+                        bp = i; // don't create an empty page
+                    }
+                }
+                pages.push(Page { start, end: bp, top_y: page_top });
+                start = bp;
+                page_top = lines[bp].top;
+                used = lines[bp..i].iter().map(|l| l.advance).sum();
             }
             used += line.advance;
         }
