@@ -125,6 +125,8 @@ struct Para {
     shd: Option<Color>,
     tab_stops: Vec<(f32, Align)>, // (position px, alignment)
     page_break_before: bool,
+    // floating anchored drawings attached to this paragraph
+    floats: Vec<Float>,
     // resolved:
     align: Align,
     marker: Option<String>, // bullet/number prefix
@@ -154,6 +156,7 @@ impl Default for Para {
             shd: None,
             tab_stops: Vec::new(),
             page_break_before: false,
+            floats: Vec::new(),
             align: Align::Left,
             marker: None,
             indent: 0.0,
@@ -223,6 +226,34 @@ struct Table {
 enum Block {
     Para(Para),
     Table(Table),
+}
+
+/// One drawable inside a floating anchor (a text box / autoshape / connector).
+struct DShape {
+    x: f32, // px, relative to the float origin
+    y: f32,
+    w: f32,
+    h: f32,
+    fill: Option<Color>,
+    outline: Option<(Color, f32)>,
+    rounded: bool, // roundRect / callout -> rounded corners
+    is_line: bool, // connector -> stroke a diagonal
+    blocks: Vec<Block>,
+    // text laid out at layout time (so rendering needs no font): glyphs + height
+    glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,
+    text_h: f32,
+}
+
+/// A floating anchored drawing (`<w:drawing><wp:anchor>`): one or more shapes /
+/// an image, positioned relative to the margin (x) and its anchor paragraph (y).
+struct Float {
+    off_x: f32, // px from left margin
+    off_y: f32, // px from the anchor paragraph's top
+    shapes: Vec<DShape>,
+    image: Option<dv_image::DecodedImage>,
+    img_w: f32,
+    img_h: f32,
+    body_y: f32, // anchor paragraph top in body coords (assigned at layout time)
 }
 
 struct Document {
@@ -535,6 +566,22 @@ fn parse_document(xml: &str) -> Document {
     // depth inside revision-tracking *Change snapshots (pPrChange / tblGridChange /
     // tcPrChange …) — their contents are stale and must be ignored.
     let mut in_change: u32 = 0;
+    let mut in_fallback: u32 = 0; // mc:Fallback (VML) — skip, prefer mc:Choice DrawingML
+    // floating anchored drawing state
+    let mut cur_float: Option<Float> = None;
+    let mut cur_dshape: Option<DShape> = None;
+    let mut in_txbx = false;
+    let mut in_dln = false; // inside a:ln of a drawing shape
+    let mut pos_target: u8 = 0; // 1=H, 2=V (capturing wp:posOffset text)
+    // saved (body) para/run while inside a text box, so nested txbx paragraphs
+    // don't clobber the paragraph that anchors the float.
+    let mut para_stack: Vec<(Option<Para>, Option<Run>)> = Vec::new();
+    // group transform stack for floats: (sx, sy, tx, ty) mapping raw shape coords
+    // (EMU at top level, child units inside groups) -> px relative to the anchor.
+    let base_tf = (EMU_TO_PX, EMU_TO_PX, 0.0, 0.0);
+    let mut gstack: Vec<(f32, f32, f32, f32)> = vec![base_tf];
+    let mut in_grpspr = false;
+    let mut g_xfrm = [0.0f32; 8];
 
     loop {
         let event = reader.read_event_into(&mut buf);
@@ -549,11 +596,104 @@ fn parse_document(xml: &str) -> Document {
                     buf.clear();
                     continue;
                 }
-                if in_change > 0 {
+                if name.as_ref() == b"mc:Fallback" {
+                    if !is_empty {
+                        in_fallback += 1;
+                    }
+                    buf.clear();
+                    continue;
+                }
+                if in_change > 0 || in_fallback > 0 {
                     buf.clear();
                     continue;
                 }
                 match name.as_ref() {
+                    // ---- floating anchored drawings (text boxes / autoshapes) ----
+                    b"wp:anchor" => {
+                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0 });
+                        gstack = vec![base_tf];
+                        in_grpspr = false;
+                    }
+                    b"wp:positionH" => pos_target = 10, // armed for H (set to 1 on posOffset)
+                    b"wp:positionV" => pos_target = 20,
+                    b"wp:posOffset" => {
+                        pos_target = if pos_target >= 20 { 2 } else { 1 };
+                    }
+                    b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                    }
+                    b"wpg:grpSpPr" if cur_float.is_some() => {
+                        in_grpspr = !is_empty;
+                        g_xfrm = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0];
+                    }
+                    b"w:txbxContent" => {
+                        in_txbx = true;
+                        para_stack.push((cur_para.take(), cur_run.take()));
+                    }
+                    b"a:off" if in_grpspr => {
+                        g_xfrm[0] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[1] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    }
+                    b"a:ext" if in_grpspr => {
+                        g_xfrm[2] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[3] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    }
+                    b"a:chOff" if in_grpspr => {
+                        g_xfrm[4] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[5] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                    }
+                    b"a:chExt" if in_grpspr => {
+                        g_xfrm[6] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[7] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    }
+                    b"a:off" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            s.x = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                            s.y = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                        }
+                    }
+                    b"a:ext" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            s.w = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                            s.h = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                        }
+                    }
+                    b"a:prstGeom" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            let prst = get_attr(&e, b"prst").unwrap_or_default();
+                            s.rounded = prst.contains("ound") || prst.contains("allout");
+                            s.is_line = prst.contains("onnector") || prst == "line";
+                        }
+                    }
+                    b"a:ln" if cur_float.is_some() => in_dln = !is_empty,
+                    b"a:noFill" if cur_float.is_some() => {
+                        if in_dln {
+                            if let Some(s) = cur_dshape.as_mut() {
+                                s.outline = None;
+                            }
+                        }
+                    }
+                    b"a:srgbClr" | b"a:schemeClr" if cur_float.is_some() => {
+                        if let Some(col) = get_attr(&e, b"val").map(|v| parse_color(&v)) {
+                            if let Some(s) = cur_dshape.as_mut() {
+                                if in_dln {
+                                    s.outline = Some((col, 1.0));
+                                } else {
+                                    s.fill = Some(col);
+                                }
+                            }
+                        }
+                    }
+                    b"a:blip" if cur_float.is_some() => {
+                        // anchored images inside floats not resolved yet (consume so it
+                        // doesn't become the paragraph's inline image)
+                    }
+                    b"wp:extent" if cur_float.is_some() => {
+                        if let Some(f) = cur_float.as_mut() {
+                            f.img_w = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) * EMU_TO_PX;
+                            f.img_h = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) * EMU_TO_PX;
+                        }
+                    }
                     // ---- table structure ----
                     b"w:tbl" => tables.push(TableBuild {
                         table: Table {
@@ -713,7 +853,17 @@ fn parse_document(xml: &str) -> Document {
                 }
             }
             Ok(Event::Text(t)) => {
-                if in_t {
+                if pos_target == 1 || pos_target == 2 {
+                    if let Ok(v) = t.unescape().unwrap_or_default().trim().parse::<f32>() {
+                        if let Some(f) = cur_float.as_mut() {
+                            if pos_target == 1 {
+                                f.off_x = v * EMU_TO_PX;
+                            } else {
+                                f.off_y = v * EMU_TO_PX;
+                            }
+                        }
+                    }
+                } else if in_t {
                     if let Some(r) = cur_run.as_mut() {
                         r.text.push_str(&t.unescape().unwrap_or_default());
                     }
@@ -722,12 +872,59 @@ fn parse_document(xml: &str) -> Document {
             Ok(Event::End(e)) if e.name().as_ref().ends_with(b"Change") => {
                 in_change = in_change.saturating_sub(1);
             }
-            Ok(Event::End(_)) if in_change > 0 => {}
+            Ok(Event::End(e)) if e.name().as_ref() == b"mc:Fallback" => {
+                in_fallback = in_fallback.saturating_sub(1);
+            }
+            Ok(Event::End(_)) if in_change > 0 || in_fallback > 0 => {}
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
                 b"w:tabs" => in_tabs = false,
                 b"w:tblBorders" | b"w:tcBorders" | b"w:pBdr" => border_ctx = 0,
                 b"w:tcPr" => in_tcpr = false,
+                b"wp:posOffset" => pos_target = 0,
+                b"a:ln" if cur_float.is_some() => in_dln = false,
+                b"w:txbxContent" => {
+                    in_txbx = false;
+                    if let Some((p, r)) = para_stack.pop() {
+                        cur_para = p;
+                        cur_run = r;
+                    }
+                }
+                b"wpg:grpSpPr" if cur_float.is_some() => {
+                    in_grpspr = false;
+                    let gsx = if g_xfrm[6] != 0.0 { g_xfrm[2] / g_xfrm[6] } else { 1.0 };
+                    let gsy = if g_xfrm[7] != 0.0 { g_xfrm[3] / g_xfrm[7] } else { 1.0 };
+                    let ltx = g_xfrm[0] - g_xfrm[4] * gsx;
+                    let lty = g_xfrm[1] - g_xfrm[5] * gsy;
+                    let (psx, psy, ptx, pty) = *gstack.last().unwrap();
+                    gstack.push((psx * gsx, psy * gsy, psx * ltx + ptx, psy * lty + pty));
+                }
+                b"wpg:grpSp" | b"wpg:wgp" if cur_float.is_some() => {
+                    if gstack.len() > 1 {
+                        gstack.pop();
+                    }
+                }
+                b"wps:wsp" | b"wps:cxnSp" => {
+                    if let (Some(f), Some(mut s)) = (cur_float.as_mut(), cur_dshape.take()) {
+                        let (sx, sy, tx, ty) = *gstack.last().unwrap();
+                        s.x = s.x * sx + tx;
+                        s.y = s.y * sy + ty;
+                        s.w *= sx;
+                        s.h *= sy;
+                        if s.w <= 0.0 {
+                            s.w = f.img_w;
+                        }
+                        if s.h <= 0.0 {
+                            s.h = f.img_h;
+                        }
+                        f.shapes.push(s);
+                    }
+                }
+                b"wp:anchor" => {
+                    if let (Some(f), Some(p)) = (cur_float.take(), cur_para.as_mut()) {
+                        p.floats.push(f);
+                    }
+                }
                 b"w:r" => {
                     if let (Some(p), Some(r)) = (cur_para.as_mut(), cur_run.take()) {
                         if !r.text.is_empty() {
@@ -737,7 +934,13 @@ fn parse_document(xml: &str) -> Document {
                 }
                 b"w:p" => {
                     if let Some(p) = cur_para.take() {
-                        push_para(&mut tables, &mut doc.blocks, p);
+                        if in_txbx {
+                            if let Some(s) = cur_dshape.as_mut() {
+                                s.blocks.push(Block::Para(p));
+                            }
+                        } else {
+                            push_para(&mut tables, &mut doc.blocks, p);
+                        }
                     }
                 }
                 b"w:tc" => {
@@ -772,7 +975,7 @@ fn parse_document(xml: &str) -> Document {
     doc
 }
 
-/// Collect every paragraph (body + nested table cells) in document order.
+/// Collect every body paragraph (incl. table cells) in document order.
 fn collect_paras_mut<'a>(blocks: &'a mut [Block], out: &mut Vec<&'a mut Para>) {
     for b in blocks.iter_mut() {
         match b {
@@ -781,6 +984,29 @@ fn collect_paras_mut<'a>(blocks: &'a mut [Block], out: &mut Vec<&'a mut Para>) {
                 for row in t.rows.iter_mut() {
                     for cell in row.cells.iter_mut() {
                         collect_paras_mut(&mut cell.blocks, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect paragraphs that live inside floating shapes' text boxes (disjoint from
+/// the body paragraphs, so a separate pass avoids aliasing the container).
+fn collect_float_paras_mut<'a>(blocks: &'a mut [Block], out: &mut Vec<&'a mut Para>) {
+    for b in blocks.iter_mut() {
+        match b {
+            Block::Para(p) => {
+                for fl in p.floats.iter_mut() {
+                    for sh in fl.shapes.iter_mut() {
+                        collect_paras_mut(&mut sh.blocks, out);
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for row in t.rows.iter_mut() {
+                    for cell in row.cells.iter_mut() {
+                        collect_float_paras_mut(&mut cell.blocks, out);
                     }
                 }
             }
@@ -1302,22 +1528,37 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
 }
 
 /// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
-fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
+fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) {
     let mut lines = Vec::new();
+    let mut floats: Vec<Float> = Vec::new();
     let mut top = 0.0f32;
+    let (page_w, margin_l, margin_r) = (doc.page_w, doc.margin_l, doc.margin_r);
 
-    for block in &doc.blocks {
+    for block in &mut doc.blocks {
         let para = match block {
             Block::Para(p) => p,
             Block::Table(t) => {
-                top = layout_table_block(t, doc, font, &mut lines, top);
+                top = layout_table_block(t, page_w, margin_l, margin_r, font, &mut lines, top);
                 continue;
             }
         };
-        let body_left = doc.margin_l + para.indent;
-        let content_w = (doc.page_w - doc.margin_r - body_left).max(32.0);
-        let right = doc.page_w - doc.margin_r;
+        let body_left = margin_l + para.indent;
+        let content_w = (page_w - margin_r - body_left).max(32.0);
+        let right = page_w - margin_r;
         top += para.spc_before;
+        // Floating anchored drawings attached here: position at the paragraph top
+        // and pre-lay-out each shape's text-box glyphs (so rendering needs no font).
+        for mut fl in std::mem::take(&mut para.floats) {
+            fl.body_y = top;
+            for sh in &mut fl.shapes {
+                if !sh.blocks.is_empty() && sh.w > 0.0 {
+                    let (g, h) = layout_cell(&sh.blocks, font, sh.w - 8.0);
+                    sh.glyphs = g;
+                    sh.text_h = h;
+                }
+            }
+            floats.push(fl);
+        }
 
         // Image in the paragraph: render it as a block. If the paragraph ALSO has
         // text (e.g. a header logo + title), render the image then fall through to
@@ -1414,7 +1655,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 }
             }
 
-            place_items(line, x, doc.margin_l, &para.tab_stops, &mut placed);
+            place_items(line, x, margin_l, &para.tab_stops, &mut placed);
             let advance = line_h + if li + 1 == n { para.spc_after } else { 0.0 };
             lines.push(Line {
                 placed,
@@ -1433,16 +1674,16 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
             top += advance;
         }
     }
-    lines
+    (lines, floats)
 }
 
-/// Lay out a cell's paragraphs into glyphs (relative to the cell content origin)
-/// and return them plus the content height.
-fn layout_cell(cell: &Cell, font: &FontData, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool)>, f32) {
+/// Lay out a block list's paragraphs into glyphs (relative to the content origin)
+/// and return them plus the content height. Used for table cells + text boxes.
+fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool)>, f32) {
     let mut glyphs = Vec::new();
     let mut y = 0.0f32;
     let w = width.max(8.0);
-    for block in &cell.blocks {
+    for block in blocks {
         let para = match block {
             Block::Para(p) => p,
             Block::Table(_) => continue, // nested tables in cells not laid out (rare)
@@ -1483,8 +1724,9 @@ fn layout_cell(cell: &Cell, font: &FontData, width: f32) -> (Vec<(u32, f32, f32,
 }
 
 /// Lay out a table as a sequence of row-band `Line`s (row-atomic for pagination).
-fn layout_table_block(t: &Table, doc: &Document, font: &FontData, lines: &mut Vec<Line>, mut top: f32) -> f32 {
-    let content_w = (doc.page_w - doc.margin_l - doc.margin_r).max(32.0);
+#[allow(clippy::too_many_arguments)]
+fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font: &FontData, lines: &mut Vec<Line>, mut top: f32) -> f32 {
+    let content_w = (page_w - margin_l - margin_r).max(32.0);
 
     // Column widths: from tblGrid, scaled to fit content width.
     let mut cols = t.grid.clone();
@@ -1504,7 +1746,7 @@ fn layout_table_block(t: &Table, doc: &Document, font: &FontData, lines: &mut Ve
     for i in 0..ncols {
         col_x[i + 1] = col_x[i] + cols[i];
     }
-    let table_left = doc.margin_l + t.ind;
+    let table_left = margin_l + t.ind;
     let (ml, mr) = (t.cell_mar_l, t.cell_mar_r);
     let (mt, mb) = (t.cell_mar_t.max(1.5), t.cell_mar_b.max(1.5));
     let n_rows = t.rows.len();
@@ -1537,7 +1779,7 @@ fn layout_table_block(t: &Table, doc: &Document, font: &FontData, lines: &mut Ve
             let (glyphs, h) = if cell.vmerge == VMerge::Continue {
                 (Vec::new(), 0.0)
             } else {
-                layout_cell(cell, font, inner_w)
+                layout_cell(&cell.blocks, font, inner_w)
             };
             row_content_h = row_content_h.max(h);
             cell_lay.push((c0, c1, glyphs, h, cell));
@@ -1630,7 +1872,7 @@ fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, n
     resolve_numbering(&mut doc, nb);
     let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
     resolve_images(&mut doc, bytes, &rels);
-    let lines = layout_lines(&doc, font);
+    let (lines, _floats) = layout_lines(&mut doc, font);
     let height = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
     Some(HdrFtr { lines, height })
 }
@@ -1743,6 +1985,69 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
     }
 }
 
+/// Render a floating anchored drawing. `dy` maps the float's body-y to the page
+/// (body_top - page_top); all coords are scaled to device px.
+fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale: f32) {
+    let fx = margin_l + fl.off_x;
+    let fy = dy + fl.body_y + fl.off_y;
+    if let Some(img) = &fl.image {
+        dl.push(Command::Image {
+            rgba: img.rgba.clone(),
+            src_w: img.width,
+            src_h: img.height,
+            x: fx * scale,
+            y: fy * scale,
+            w: fl.img_w.max(1.0) * scale,
+            h: fl.img_h.max(1.0) * scale,
+            clip: None,
+        });
+    }
+    // Group shapes carry page-absolute coords (from the group xfrm); a lone shape
+    // with no group uses the anchor offset.
+    let grouped = fl.shapes.iter().any(|s| s.x > fl.off_x + 64.0);
+    let _ = (fx, fy);
+    for sh in &fl.shapes {
+        let (sx, sy) = if grouped { (sh.x, sh.y) } else { (fx + sh.x, fy + sh.y) };
+        if sh.is_line {
+            if let Some((c, w)) = sh.outline {
+                let mut p = dv_ir::PathData::new();
+                p.move_to(sx * scale, sy * scale);
+                p.line_to((sx + sh.w) * scale, (sy + sh.h) * scale);
+                dl.push(Command::StrokePath { path: p, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+            }
+            continue;
+        }
+        if sh.w <= 0.0 || sh.h <= 0.0 {
+            continue;
+        }
+        if let Some(c) = sh.fill {
+            dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, sh.h * scale, c));
+        }
+        if let Some((c, w)) = sh.outline {
+            let t = (w * scale).max(1.0);
+            dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, t, c));
+            dl.push(fill_box(sx * scale, (sy + sh.h) * scale - t, sh.w * scale, t, c));
+            dl.push(fill_box(sx * scale, sy * scale, t, sh.h * scale, c));
+            dl.push(fill_box((sx + sh.w) * scale - t, sy * scale, t, sh.h * scale, c));
+        }
+        // text box content, vertically centred, with a small inset
+        let pad = 4.0;
+        let vshift = ((sh.h - 2.0 * pad - sh.text_h).max(0.0)) / 2.0;
+        let (gx0, gy0) = (sx + pad, sy + pad + vshift);
+        let mut i = 0;
+        while i < sh.glyphs.len() {
+            let (_, _, _, size, color, bold) = sh.glyphs[i];
+            let mut run = Vec::new();
+            while i < sh.glyphs.len() && sh.glyphs[i].3 == size && sh.glyphs[i].4 == color && sh.glyphs[i].5 == bold {
+                let (gid, gx, gy, ..) = sh.glyphs[i];
+                run.push(PositionedGlyph { id: gid, x: (gx0 + gx) * scale, y: (gy0 + gy) * scale });
+                i += 1;
+            }
+            dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: size * scale, paint: Paint::Solid(color), bold, glyphs: run }));
+        }
+    }
+}
+
 /// A solid axis-aligned rectangle (device coords).
 fn fill_box(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     let mut p = dv_ir::PathData::new();
@@ -1766,11 +2071,14 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
     let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
     resolve_numbering(&mut doc, &numbering);
     resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
-    let lines = layout_lines(&doc, font);
+    let (lines, floats) = layout_lines(&mut doc, font);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
     for line in &lines {
         emit_line(&mut dl, line, doc.margin_t + line.top + line.ascent, 1.0);
+    }
+    for fl in &floats {
+        render_float(&mut dl, fl, doc.margin_l, doc.margin_t, 1.0);
     }
     dl
 }
@@ -1795,6 +2103,8 @@ pub struct DocxDoc {
     hdr_default: Option<HdrFtr>,
     ftr_first: Option<HdrFtr>,
     ftr_default: Option<HdrFtr>,
+    floats: Vec<Float>,
+    margin_l: f32,
 }
 
 impl DocxDoc {
@@ -1818,7 +2128,7 @@ impl DocxDoc {
         let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
         resolve_numbering(&mut doc, &numbering);
         resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
-        let lines = layout_lines(&doc, font);
+        let (lines, floats) = layout_lines(&mut doc, font);
 
         // Resolve + lay out header/footer parts (by reference type).
         let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
@@ -1868,6 +2178,8 @@ impl DocxDoc {
             hdr_default,
             ftr_first,
             ftr_default,
+            floats,
+            margin_l: doc.margin_l,
         }
     }
 
@@ -1903,6 +2215,15 @@ impl DocxDoc {
             let line = &self.lines[li];
             let local_top = self.body_top + (line.top - page.top_y);
             emit_line(&mut dl, line, (local_top + line.ascent) * scale, scale);
+        }
+
+        // Floating drawings anchored on this page.
+        let next_top = self.pages.get(idx + 1).map(|p| p.top_y).unwrap_or(f32::INFINITY);
+        let dy = self.body_top - page.top_y;
+        for fl in &self.floats {
+            if fl.body_y >= page.top_y - 0.5 && fl.body_y < next_top {
+                render_float(&mut dl, fl, self.margin_l, dy, scale);
+            }
         }
         dl
     }
@@ -2168,22 +2489,32 @@ fn resolve_para_align(table: &StyleTable, p_style: Option<&str>, direct: &PPr) -
 }
 
 /// Bake resolved (size/bold/color/align) into each run/paragraph.
+fn resolve_one_para(para: &mut Para, table: &StyleTable) {
+    para.align = resolve_para_align(table, para.p_style.as_deref(), &para.direct);
+    let p_style = para.p_style.clone();
+    for run in &mut para.runs {
+        let rpr = resolve_run_rpr(table, p_style.as_deref(), run.r_style.as_deref(), &run.direct);
+        run.bold = rpr.bold.unwrap_or(false);
+        run.italic = rpr.italic.unwrap_or(false);
+        run.underline = rpr.underline.unwrap_or(false);
+        run.strike = rpr.strike.unwrap_or(false);
+        run.size = rpr.size.unwrap_or(DEFAULT_SIZE_PX);
+        run.vert_align = rpr.vert_align.unwrap_or(0);
+        run.color = rpr.color.unwrap_or(Color::BLACK);
+        run.highlight = rpr.highlight;
+    }
+}
+
 fn resolve_document(doc: &mut Document, table: &StyleTable) {
+    // Body paragraphs, then (separate pass to avoid aliasing) text-box paragraphs.
     let mut paras = Vec::new();
     collect_paras_mut(&mut doc.blocks, &mut paras);
     for para in paras {
-        para.align = resolve_para_align(table, para.p_style.as_deref(), &para.direct);
-        let p_style = para.p_style.clone();
-        for run in &mut para.runs {
-            let rpr = resolve_run_rpr(table, p_style.as_deref(), run.r_style.as_deref(), &run.direct);
-            run.bold = rpr.bold.unwrap_or(false);
-            run.italic = rpr.italic.unwrap_or(false);
-            run.underline = rpr.underline.unwrap_or(false);
-            run.strike = rpr.strike.unwrap_or(false);
-            run.size = rpr.size.unwrap_or(DEFAULT_SIZE_PX);
-            run.vert_align = rpr.vert_align.unwrap_or(0);
-            run.color = rpr.color.unwrap_or(Color::BLACK);
-            run.highlight = rpr.highlight;
-        }
+        resolve_one_para(para, table);
+    }
+    let mut fpars = Vec::new();
+    collect_float_paras_mut(&mut doc.blocks, &mut fpars);
+    for para in fpars {
+        resolve_one_para(para, table);
     }
 }
