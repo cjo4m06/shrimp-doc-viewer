@@ -163,8 +163,70 @@ impl Default for Para {
     }
 }
 
+/// A side's border (on for a visible line).
+#[derive(Clone, Copy)]
+struct Border {
+    on: bool,
+    color: Color,
+    size: f32, // px
+}
+impl Default for Border {
+    fn default() -> Self {
+        Border { on: false, color: Color::BLACK, size: 1.0 }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct BorderSet {
+    top: Border,
+    bottom: Border,
+    left: Border,
+    right: Border,
+    inside_h: Border,
+    inside_v: Border,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum VMerge {
+    None,
+    Restart,
+    Continue,
+}
+
+struct Cell {
+    blocks: Vec<Block>,
+    grid_span: u32,
+    vmerge: VMerge,
+    borders: BorderSet, // tcBorders override
+    shd: Option<Color>,
+    valign: u8, // 0 top, 1 center, 2 bottom
+}
+
+struct Row {
+    cells: Vec<Cell>,
+    min_h: f32, // trHeight (px)
+    is_header: bool,
+}
+
+struct Table {
+    grid: Vec<f32>, // column widths (px)
+    rows: Vec<Row>,
+    borders: BorderSet,
+    cell_mar_l: f32,
+    cell_mar_r: f32,
+    cell_mar_t: f32,
+    cell_mar_b: f32,
+    ind: f32, // table left indent (px)
+    align: Align,
+}
+
+enum Block {
+    Para(Para),
+    Table(Table),
+}
+
 struct Document {
-    paras: Vec<Para>,
+    blocks: Vec<Block>,
     page_w: f32,
     page_h: f32,
     margin_l: f32,
@@ -228,9 +290,16 @@ fn is_cjk(ch: char) -> bool {
         || (0xFF00..=0xFFEF).contains(&c)
 }
 
+/// A table being assembled during parsing.
+struct TableBuild {
+    table: Table,
+    cur_row: Option<Row>,
+    cur_cell: Option<Cell>,
+}
+
 fn parse_document(xml: &str) -> Document {
     let mut doc = Document {
-        paras: Vec::new(),
+        blocks: Vec::new(),
         page_w: 816.0,  // US Letter default (12240 twips)
         page_h: 1056.0, // 15840 twips
         margin_l: 96.0,
@@ -246,14 +315,12 @@ fn parse_document(xml: &str) -> Document {
     let mut cur_run: Option<Run> = None;
     let mut in_t = false;
     let mut in_tabs = false;
-    let mut in_pbdr = false;
 
     let open = |doc: &mut Document,
                 cur_para: &mut Option<Para>,
                 cur_run: &mut Option<Run>,
                 in_t: &mut bool,
                 in_tabs: &mut bool,
-                in_pbdr: &mut bool,
                 e: &BytesStart| {
         match e.name().as_ref() {
             b"w:p" => {
@@ -359,17 +426,6 @@ fn parse_document(xml: &str) -> Document {
                     r.direct.highlight = highlight_color(&v);
                 }
             }
-            b"w:shd" => {
-                let fill = get_attr(e, b"w:fill");
-                let col = fill.as_deref().filter(|f| !f.eq_ignore_ascii_case("auto") && *f != "FFFFFF").map(parse_color);
-                if let Some(r) = cur_run.as_mut() {
-                    if r.direct.highlight.is_none() {
-                        r.direct.highlight = col;
-                    }
-                } else if let Some(p) = cur_para.as_mut() {
-                    p.shd = col;
-                }
-            }
             b"w:spacing" => {
                 if let Some(p) = cur_para.as_mut() {
                     if cur_run.is_none() {
@@ -384,25 +440,6 @@ fn parse_document(xml: &str) -> Document {
                                 Some("exact") | Some("atLeast") => p.line_exact = line * TWIP_TO_PX,
                                 _ => p.line_mult = line / 240.0,
                             }
-                        }
-                    }
-                }
-            }
-            b"w:pBdr" => *in_pbdr = true,
-            b"w:top" | b"w:bottom" => {
-                if *in_pbdr {
-                    if let Some(p) = cur_para.as_mut() {
-                        let on = !matches!(get_attr(e, b"w:val").as_deref(), Some("none") | Some("nil") | None);
-                        if e.name().as_ref() == b"w:top" {
-                            p.pbdr.top = on;
-                        } else {
-                            p.pbdr.bottom = on;
-                        }
-                        if let Some(sz) = get_attr(e, b"w:sz").and_then(|s| s.parse::<f32>().ok()) {
-                            p.pbdr.size = (sz / 8.0 * 4.0 / 3.0).max(0.75); // eighths of a point -> px
-                        }
-                        if let Some(c) = get_attr(e, b"w:color") {
-                            p.pbdr.color = parse_color(&c);
                         }
                     }
                 }
@@ -474,10 +511,162 @@ fn parse_document(xml: &str) -> Document {
         }
     };
 
+    // Table-building state.
+    let mut tables: Vec<TableBuild> = Vec::new();
+    let mut border_ctx: u8 = 0; // 0 none, 1 pBdr, 2 tblBorders, 3 tcBorders
+    let mut in_tcpr = false;
+
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &mut in_tabs, &mut in_pbdr, &e);
+                let name = e.name();
+                match name.as_ref() {
+                    // ---- table structure ----
+                    b"w:tbl" => tables.push(TableBuild {
+                        table: Table {
+                            grid: Vec::new(),
+                            rows: Vec::new(),
+                            borders: BorderSet::default(),
+                            cell_mar_l: 108.0 * TWIP_TO_PX,
+                            cell_mar_r: 108.0 * TWIP_TO_PX,
+                            cell_mar_t: 0.0,
+                            cell_mar_b: 0.0,
+                            ind: 0.0,
+                            align: Align::Left,
+                        },
+                        cur_row: None,
+                        cur_cell: None,
+                    }),
+                    b"w:tr" => {
+                        if let Some(tb) = tables.last_mut() {
+                            tb.cur_row = Some(Row { cells: Vec::new(), min_h: 0.0, is_header: false });
+                        }
+                    }
+                    b"w:tc" => {
+                        if let Some(tb) = tables.last_mut() {
+                            tb.cur_cell = Some(Cell {
+                                blocks: Vec::new(),
+                                grid_span: 1,
+                                vmerge: VMerge::None,
+                                borders: BorderSet::default(),
+                                shd: None,
+                                valign: 0,
+                            });
+                        }
+                    }
+                    b"w:gridCol" => {
+                        if let (Some(tb), Some(w)) = (tables.last_mut(), get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok())) {
+                            tb.table.grid.push(w * TWIP_TO_PX);
+                        }
+                    }
+                    b"w:tblBorders" => border_ctx = 2,
+                    b"w:tcBorders" => border_ctx = 3,
+                    b"w:pBdr" => border_ctx = 1,
+                    b"w:tcPr" => in_tcpr = true,
+                    b"w:gridSpan" => {
+                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                            if let Some(c) = tb.cur_cell.as_mut() {
+                                c.grid_span = v.max(1);
+                            }
+                        }
+                    }
+                    b"w:vMerge" => {
+                        if let Some(c) = tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()) {
+                            c.vmerge = match get_attr(&e, b"w:val").as_deref() {
+                                Some("restart") => VMerge::Restart,
+                                _ => VMerge::Continue,
+                            };
+                        }
+                    }
+                    b"w:vAlign" => {
+                        if let Some(c) = tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()) {
+                            c.valign = match get_attr(&e, b"w:val").as_deref() {
+                                Some("center") => 1,
+                                Some("bottom") => 2,
+                                _ => 0,
+                            };
+                        }
+                    }
+                    b"w:trHeight" => {
+                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse::<f32>().ok())) {
+                            if let Some(r) = tb.cur_row.as_mut() {
+                                r.min_h = v * TWIP_TO_PX;
+                            }
+                        }
+                    }
+                    b"w:tblHeader" => {
+                        if let Some(r) = tables.last_mut().and_then(|tb| tb.cur_row.as_mut()) {
+                            r.is_header = true;
+                        }
+                    }
+                    b"w:tblInd" => {
+                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok())) {
+                            tb.table.ind = v * TWIP_TO_PX;
+                        }
+                    }
+                    b"w:jc" if in_tcpr || (tables.last().is_some() && cur_para.is_none()) => {
+                        // table alignment (jc in tblPr) vs cell — only treat as table jc
+                        if let Some(tb) = tables.last_mut() {
+                            if cur_para.is_none() {
+                                tb.table.align = match get_attr(&e, b"w:val").as_deref() {
+                                    Some("center") => Align::Center,
+                                    Some("right") | Some("end") => Align::Right,
+                                    _ => Align::Left,
+                                };
+                            }
+                        }
+                    }
+                    b"w:left" | b"w:right" | b"w:top" | b"w:bottom" | b"w:insideH" | b"w:insideV" => {
+                        // Border side — route by context. (w:top/bottom/start/end of cell margins ignored here.)
+                        if border_ctx != 0 {
+                            let bd = parse_border(&e);
+                            let side = name.as_ref();
+                            let set: Option<&mut BorderSet> = match border_ctx {
+                                2 => tables.last_mut().map(|tb| &mut tb.table.borders),
+                                3 => tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()).map(|c| &mut c.borders),
+                                _ => None,
+                            };
+                            if let Some(set) = set {
+                                match side {
+                                    b"w:top" => set.top = bd,
+                                    b"w:bottom" => set.bottom = bd,
+                                    b"w:left" => set.left = bd,
+                                    b"w:right" => set.right = bd,
+                                    b"w:insideH" => set.inside_h = bd,
+                                    b"w:insideV" => set.inside_v = bd,
+                                    _ => {}
+                                }
+                            } else if border_ctx == 1 && (side == b"w:top" || side == b"w:bottom") {
+                                if let Some(p) = cur_para.as_mut() {
+                                    let on = bd.on;
+                                    if side == b"w:top" {
+                                        p.pbdr.top = on;
+                                    } else {
+                                        p.pbdr.bottom = on;
+                                    }
+                                    p.pbdr.color = bd.color;
+                                    p.pbdr.size = bd.size;
+                                }
+                            }
+                        }
+                    }
+                    b"w:shd" => {
+                        let fill = get_attr(&e, b"w:fill");
+                        let col = fill.as_deref().filter(|f| !f.eq_ignore_ascii_case("auto") && *f != "FFFFFF").map(parse_color);
+                        if in_tcpr {
+                            if let Some(c) = tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()) {
+                                c.shd = col;
+                            }
+                        } else if let Some(r) = cur_run.as_mut() {
+                            if r.direct.highlight.is_none() {
+                                r.direct.highlight = col;
+                            }
+                        } else if let Some(p) = cur_para.as_mut() {
+                            p.shd = col;
+                        }
+                    }
+                    _ => open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &mut in_tabs, &e),
+                }
             }
             Ok(Event::Text(t)) => {
                 if in_t {
@@ -489,7 +678,8 @@ fn parse_document(xml: &str) -> Document {
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
                 b"w:tabs" => in_tabs = false,
-                b"w:pBdr" => in_pbdr = false,
+                b"w:tblBorders" | b"w:tcBorders" | b"w:pBdr" => border_ctx = 0,
+                b"w:tcPr" => in_tcpr = false,
                 b"w:r" => {
                     if let (Some(p), Some(r)) = (cur_para.as_mut(), cur_run.take()) {
                         if !r.text.is_empty() {
@@ -499,7 +689,28 @@ fn parse_document(xml: &str) -> Document {
                 }
                 b"w:p" => {
                     if let Some(p) = cur_para.take() {
-                        doc.paras.push(p);
+                        push_para(&mut tables, &mut doc.blocks, p);
+                    }
+                }
+                b"w:tc" => {
+                    if let Some(tb) = tables.last_mut() {
+                        if let Some(cell) = tb.cur_cell.take() {
+                            if let Some(row) = tb.cur_row.as_mut() {
+                                row.cells.push(cell);
+                            }
+                        }
+                    }
+                }
+                b"w:tr" => {
+                    if let Some(tb) = tables.last_mut() {
+                        if let Some(row) = tb.cur_row.take() {
+                            tb.table.rows.push(row);
+                        }
+                    }
+                }
+                b"w:tbl" => {
+                    if let Some(tb) = tables.pop() {
+                        push_block(&mut tables, &mut doc.blocks, Block::Table(tb.table));
                     }
                 }
                 _ => {}
@@ -511,6 +722,45 @@ fn parse_document(xml: &str) -> Document {
     }
 
     doc
+}
+
+/// Collect every paragraph (body + nested table cells) in document order.
+fn collect_paras_mut<'a>(blocks: &'a mut [Block], out: &mut Vec<&'a mut Para>) {
+    for b in blocks.iter_mut() {
+        match b {
+            Block::Para(p) => out.push(p),
+            Block::Table(t) => {
+                for row in t.rows.iter_mut() {
+                    for cell in row.cells.iter_mut() {
+                        collect_paras_mut(&mut cell.blocks, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Parse a border element (`w:sz` eighths-of-pt, `w:color`, `w:val`).
+fn parse_border(e: &BytesStart) -> Border {
+    let on = !matches!(get_attr(e, b"w:val").as_deref(), Some("none") | Some("nil") | None);
+    let size = get_attr(e, b"w:sz").and_then(|s| s.parse::<f32>().ok()).map(|sz| (sz / 8.0 * 4.0 / 3.0).max(0.75)).unwrap_or(1.0);
+    let color = get_attr(e, b"w:color").map(|c| parse_color(&c)).unwrap_or(Color::BLACK);
+    Border { on, color, size }
+}
+
+/// Route a finished paragraph into the current cell, else the root block list.
+fn push_para(tables: &mut [TableBuild], root: &mut Vec<Block>, p: Para) {
+    push_block(tables, root, Block::Para(p));
+}
+
+fn push_block(tables: &mut [TableBuild], root: &mut Vec<Block>, b: Block) {
+    if let Some(tb) = tables.last_mut() {
+        if let Some(cell) = tb.cur_cell.as_mut() {
+            cell.blocks.push(b);
+            return;
+        }
+    }
+    root.push(b);
 }
 
 /// One laid-out glyph with the style needed to paint it.
@@ -848,7 +1098,9 @@ fn substitute(text: &str, num_id: u32, abstract_id: u32, nb: &Numbering, counter
 /// each list paragraph's marker + indents.
 fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
     let mut counters: HashMap<(u32, u32), i32> = HashMap::new();
-    for para in &mut doc.paras {
+    let mut paras = Vec::new();
+    collect_paras_mut(&mut doc.blocks, &mut paras);
+    for para in paras {
         let num_id = match para.num_id {
             Some(n) if n != 0 => n,
             _ => continue,
@@ -907,10 +1159,19 @@ struct ImageBox {
     h: f32,
 }
 
+/// A pre-rendered table row band: rects (cell fills + borders) and glyphs, all in
+/// coords relative to the line's top-left, at zoom 1.
+#[derive(Default)]
+struct TableDraw {
+    rects: Vec<(f32, f32, f32, f32, Color)>,          // x,y,w,h,color
+    glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,   // gid, x, y(baseline), size, color, bold
+}
+
 /// A laid-out line at zoom 1. `top` is the cumulative content-y of its top edge.
 struct Line {
     placed: Vec<PlacedGlyph>,
     image: Option<ImageBox>,
+    table: Option<TableDraw>,
     top: f32,
     line_h: f32,
     advance: f32, // line_h + trailing paragraph spacing
@@ -942,7 +1203,14 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut top = 0.0f32;
 
-    for para in &doc.paras {
+    for block in &doc.blocks {
+        let para = match block {
+            Block::Para(p) => p,
+            Block::Table(t) => {
+                top = layout_table_block(t, doc, font, &mut lines, top);
+                continue;
+            }
+        };
         let body_left = doc.margin_l + para.indent;
         let content_w = (doc.page_w - doc.margin_r - body_left).max(32.0);
         let right = doc.page_w - doc.margin_r;
@@ -960,6 +1228,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
             lines.push(Line {
                 placed: Vec::new(),
                 image: Some(ImageBox { rgba: img.rgba.clone(), src_w: img.width, src_h: img.height, x: body_left, w, h }),
+                table: None,
                 top,
                 line_h: h,
                 advance: h + space,
@@ -983,6 +1252,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
             lines.push(Line {
                 placed: Vec::new(),
                 image: None,
+                table: None,
                 top,
                 line_h,
                 advance: line_h + para.spc_after,
@@ -1064,6 +1334,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
             lines.push(Line {
                 placed,
                 image: None,
+                table: None,
                 top,
                 line_h,
                 advance,
@@ -1078,6 +1349,172 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
         }
     }
     lines
+}
+
+/// Lay out a cell's paragraphs into glyphs (relative to the cell content origin)
+/// and return them plus the content height.
+fn layout_cell(cell: &Cell, font: &FontData, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool)>, f32) {
+    let mut glyphs = Vec::new();
+    let mut y = 0.0f32;
+    let w = width.max(8.0);
+    for block in &cell.blocks {
+        let para = match block {
+            Block::Para(p) => p,
+            Block::Table(_) => continue, // nested tables in cells not laid out (rare)
+        };
+        y += para.spc_before;
+        let items = shape_para(font, para);
+        if items.is_empty() {
+            y += DEFAULT_SIZE_PX * 1.2 + para.spc_after;
+            continue;
+        }
+        let wrapped = wrap(items, w);
+        let n = wrapped.len();
+        for (li, line) in wrapped.iter().enumerate() {
+            let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
+            let line_h = if para.line_exact > 0.0 { para.line_exact } else { max_size * 1.2 };
+            let lw = line_width(line);
+            let mut x = match para.align {
+                Align::Left => 0.0,
+                Align::Center => (w - lw) / 2.0,
+                Align::Right => w - lw,
+            };
+            let baseline = y + max_size * 0.85;
+            for it in line {
+                if it.kind == IKind::Tab {
+                    x = ((x / 48.0).floor() + 1.0) * 48.0;
+                    continue;
+                }
+                if it.kind == IKind::Break {
+                    continue;
+                }
+                glyphs.push((it.gid, x + it.x_off, baseline, it.size, it.color, it.bold));
+                x += it.advance;
+            }
+            y += line_h + if li + 1 == n { para.spc_after } else { 0.0 };
+        }
+    }
+    (glyphs, y)
+}
+
+/// Lay out a table as a sequence of row-band `Line`s (row-atomic for pagination).
+fn layout_table_block(t: &Table, doc: &Document, font: &FontData, lines: &mut Vec<Line>, mut top: f32) -> f32 {
+    let content_w = (doc.page_w - doc.margin_l - doc.margin_r).max(32.0);
+
+    // Column widths: from tblGrid, scaled to fit content width.
+    let mut cols = t.grid.clone();
+    if cols.is_empty() {
+        let n = t.rows.first().map(|r| r.cells.iter().map(|c| c.grid_span as usize).sum::<usize>()).unwrap_or(1).max(1);
+        cols = vec![content_w / n as f32; n];
+    }
+    let total: f32 = cols.iter().sum();
+    if total > content_w + 0.5 && total > 0.0 {
+        let s = content_w / total;
+        for c in &mut cols {
+            *c *= s;
+        }
+    }
+    let ncols = cols.len();
+    let mut col_x = vec![0.0f32; ncols + 1];
+    for i in 0..ncols {
+        col_x[i + 1] = col_x[i] + cols[i];
+    }
+    let table_left = doc.margin_l + t.ind;
+    let (ml, mr) = (t.cell_mar_l, t.cell_mar_r);
+    let (mt, mb) = (t.cell_mar_t.max(1.5), t.cell_mar_b.max(1.5));
+    let n_rows = t.rows.len();
+
+    let pick = |cb: Border, outer: Border, inner: Border, is_outer: bool| -> Border {
+        if cb.on {
+            cb
+        } else if is_outer {
+            outer
+        } else {
+            inner
+        }
+    };
+
+    for (ri, row) in t.rows.iter().enumerate() {
+        // Lay out each cell; track its column span + glyphs + content height.
+        let mut ci = 0usize;
+        let mut cell_lay: Vec<(usize, usize, Vec<(u32, f32, f32, f32, Color, bool)>, f32, &Cell)> = Vec::new();
+        let mut row_content_h = 0.0f32;
+        for cell in &row.cells {
+            if ci >= ncols {
+                break;
+            }
+            let span = (cell.grid_span as usize).max(1).min(ncols - ci);
+            let c0 = ci;
+            let c1 = ci + span;
+            ci = c1;
+            let cell_w = (col_x[c1] - col_x[c0]).max(4.0);
+            let inner_w = (cell_w - ml - mr).max(4.0);
+            let (glyphs, h) = if cell.vmerge == VMerge::Continue {
+                (Vec::new(), 0.0)
+            } else {
+                layout_cell(cell, font, inner_w)
+            };
+            row_content_h = row_content_h.max(h);
+            cell_lay.push((c0, c1, glyphs, h, cell));
+        }
+        let row_h = (row_content_h + mt + mb).max(row.min_h).max(DEFAULT_SIZE_PX);
+
+        // Build the row band's draw list.
+        let mut td = TableDraw::default();
+        for (c0, c1, glyphs, content_h, cell) in &cell_lay {
+            let x = table_left + col_x[*c0];
+            let cell_w = col_x[*c1] - col_x[*c0];
+            // shading
+            if let Some(c) = cell.shd {
+                td.rects.push((x, 0.0, cell_w, row_h, c));
+            }
+            // borders (cell override else table outer/inner)
+            let is_continue = cell.vmerge == VMerge::Continue;
+            let bt = pick(cell.borders.top, t.borders.top, t.borders.inside_h, ri == 0);
+            let bb = pick(cell.borders.bottom, t.borders.bottom, t.borders.inside_h, ri + 1 == n_rows);
+            let bl = pick(cell.borders.left, t.borders.left, t.borders.inside_v, *c0 == 0);
+            let br = pick(cell.borders.right, t.borders.right, t.borders.inside_v, *c1 == ncols);
+            // Suppress the shared edge between a vMerge restart and its continues.
+            if bt.on && !is_continue {
+                td.rects.push((x, 0.0, cell_w, bt.size, bt.color));
+            }
+            if bb.on {
+                td.rects.push((x, row_h - bb.size, cell_w, bb.size, bb.color));
+            }
+            if bl.on {
+                td.rects.push((x, 0.0, bl.size, row_h, bl.color));
+            }
+            if br.on {
+                td.rects.push((x + cell_w - br.size, 0.0, br.size, row_h, br.color));
+            }
+            // glyphs: offset to cell content origin + vertical alignment
+            let vshift = match cell.valign {
+                1 => ((row_h - mt - mb) - content_h).max(0.0) / 2.0,
+                2 => ((row_h - mt - mb) - content_h).max(0.0),
+                _ => 0.0,
+            };
+            for (gid, gx, gy, sz, col, bold) in glyphs {
+                td.glyphs.push((*gid, x + ml + gx, mt + vshift + gy, *sz, *col, *bold));
+            }
+        }
+
+        lines.push(Line {
+            placed: Vec::new(),
+            image: None,
+            table: Some(td),
+            top,
+            line_h: row_h,
+            advance: row_h,
+            ascent: row_h,
+            shd: None,
+            bdr_top: None,
+            bdr_bottom: None,
+            left: table_left,
+            right: table_left + col_x[ncols],
+        });
+        top += row_h;
+    }
+    top + 4.0 // small gap after the table
 }
 
 /// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
@@ -1097,8 +1534,28 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
         return;
     }
 
-    // Paragraph shading + borders span the full body width.
     let top_y = baseline - line.ascent * scale;
+
+    // Table row band: pre-computed rects (fills + borders) then cell glyphs.
+    if let Some(td) = &line.table {
+        for (x, y, w, h, c) in &td.rects {
+            dl.push(fill_box(x * scale, top_y + y * scale, w * scale, h * scale, *c));
+        }
+        let mut i = 0;
+        while i < td.glyphs.len() {
+            let (_, _, _, sz, col, bold) = td.glyphs[i];
+            let mut glyphs = Vec::new();
+            while i < td.glyphs.len() && td.glyphs[i].3 == sz && td.glyphs[i].4 == col && td.glyphs[i].5 == bold {
+                let (gid, gx, gy, ..) = td.glyphs[i];
+                glyphs.push(PositionedGlyph { id: gid, x: gx * scale, y: top_y + gy * scale });
+                i += 1;
+            }
+            dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: sz * scale, paint: Paint::Solid(col), bold, glyphs }));
+        }
+        return;
+    }
+
+    // Paragraph shading + borders span the full body width.
     let bot_y = top_y + line.line_h * scale;
     let (lx, rx) = (line.left * scale, line.right * scale);
     if let Some(c) = line.shd {
@@ -1218,7 +1675,7 @@ pub struct DocxDoc {
 impl DocxDoc {
     pub fn parse(bytes: &[u8], font: &FontData) -> DocxDoc {
         let mut doc = read_zip_entry(bytes, "word/document.xml").map(|x| parse_document(&x)).unwrap_or_else(|| Document {
-            paras: Vec::new(),
+            blocks: Vec::new(),
             page_w: 816.0,
             page_h: 1056.0,
             margin_l: 96.0,
@@ -1334,7 +1791,9 @@ fn resolve_images(doc: &mut Document, bytes: &[u8]) {
         Some(s) => rels_map(&s),
         None => return,
     };
-    for para in &mut doc.paras {
+    let mut paras = Vec::new();
+    collect_paras_mut(&mut doc.blocks, &mut paras);
+    for para in paras {
         let Some(rid) = para.image_rid.clone() else { continue };
         let Some(target) = rels.get(&rid) else { continue };
         let path = resolve_rel("word", target);
@@ -1531,7 +1990,9 @@ fn resolve_para_align(table: &StyleTable, p_style: Option<&str>, direct: &PPr) -
 
 /// Bake resolved (size/bold/color/align) into each run/paragraph.
 fn resolve_document(doc: &mut Document, table: &StyleTable) {
-    for para in &mut doc.paras {
+    let mut paras = Vec::new();
+    collect_paras_mut(&mut doc.blocks, &mut paras);
+    for para in paras {
         para.align = resolve_para_align(table, para.p_style.as_deref(), &para.direct);
         let p_style = para.p_style.clone();
         for run in &mut para.runs {
