@@ -13,5 +13,6 @@ dv-ir.workspace = true
 dv-text.workspace = true
 dv-render.workspace = true
 dv-xlsx.workspace = true
+dv-docx.workspace = true
 wasm-bindgen = "=0.2.125"
 console_error_panic_hook = "0.1"

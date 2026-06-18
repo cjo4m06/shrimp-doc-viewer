@@ -123,6 +123,19 @@ pub fn xlsx_sheet_names(xlsx: &[u8]) -> Vec<String> {
     dv_xlsx::sheet_names(xlsx)
 }
 
+/// Render a DOCX document to RGBA via the shared geba (one continuous page).
+#[wasm_bindgen]
+pub fn render_docx(docx: Vec<u8>, font_bytes: Vec<u8>) -> RenderedImage {
+    let measure_font = FontData::new(font_bytes.clone());
+    let dl = dv_docx::render_document(&docx, &measure_font);
+
+    let mut registry = FontRegistry::new();
+    registry.insert(FontId(0), FontData::new(font_bytes));
+
+    let rgba = render(&dl, &registry);
+    RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+}
+
 /// The semantic version of the WASM core, surfaced to JS for diagnostics.
 #[wasm_bindgen]
 pub fn version() -> String {

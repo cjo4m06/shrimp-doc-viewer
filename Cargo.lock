@@ -160,6 +160,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dv-docx"
+version = "0.0.0"
+dependencies = [
+ "dv-ir",
+ "dv-render",
+ "dv-text",
+ "quick-xml",
+ "zip",
+]
+
+[[package]]
 name = "dv-ir"
 version = "0.0.0"
 
@@ -186,6 +197,7 @@ name = "dv-wasm"
 version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
+ "dv-docx",
  "dv-ir",
  "dv-render",
  "dv-text",
