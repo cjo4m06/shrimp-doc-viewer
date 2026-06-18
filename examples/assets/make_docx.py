@@ -15,6 +15,10 @@ W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 # Each paragraph: (align, [ (text, bold, size_halfpoints, color_hex_or_None) ]).
 PARAS = [
     ("center", [("doc-viewer 文件檢視器", True, 48, "1F6FEB")]),
+    # pStyle inheritance test: runs carry NO direct rPr, so bold/colour/size come
+    # entirely from the styles.xml Heading1/Heading2 definitions (H2 basedOn H1).
+    ("left", [("樣式繼承 Heading1(粗體+藍+大字,皆繼承自樣式)", False, None, None)], "Heading1"),
+    ("left", [("樣式繼承 Heading2(basedOn H1:繼承粗體+藍,字級改小)", False, None, None)], "Heading2"),
     ("left", [("一、繁體中文流式排版測試", True, 32, None)]),
     ("both", [
         ("這是一段較長的內文,用來測試自動換行(line wrapping)。", False, 24, None),
@@ -48,6 +52,7 @@ CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 </Types>"""
 
 RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -68,14 +73,25 @@ def run_xml(text, bold, size_hp, color):
     return f'<w:r>{rpr}<w:t xml:space="preserve">{escape(text)}</w:t></w:r>'
 
 
-def para_xml(align, runs):
-    ppr = f'<w:pPr><w:jc w:val="{align}"/></w:pPr>'
+STYLES = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="{W}">
+<w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:b/><w:color w:val="1F6FEB"/><w:sz w:val="40"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Heading1"/><w:rPr><w:sz w:val="28"/></w:rPr></w:style>
+</w:styles>"""
+
+
+def para_xml(align, runs, pstyle=None):
+    ppr = "<w:pPr>"
+    if pstyle:
+        ppr += f'<w:pStyle w:val="{pstyle}"/>'
+    ppr += f'<w:jc w:val="{align}"/></w:pPr>'
     body = "".join(run_xml(*r) for r in runs)
     return f"<w:p>{ppr}{body}</w:p>"
 
 
 def main(path):
-    body = "".join(para_xml(a, rs) for (a, rs) in PARAS)
+    body = "".join(para_xml(*p) for p in PARAS)
     sect = (
         '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
         '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>'
@@ -88,6 +104,7 @@ def main(path):
         z.writestr("[Content_Types].xml", CT)
         z.writestr("_rels/.rels", RELS)
         z.writestr("word/document.xml", document)
+        z.writestr("word/styles.xml", STYLES)
     print("wrote", path)
 
 

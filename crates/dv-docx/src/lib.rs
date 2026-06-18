@@ -10,6 +10,7 @@
 //! margins. Not yet: tables, lists/numbering, images, floats, real pagination
 //! (rendered as one continuous page), styles.xml inheritance, italic slant.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
 use dv_ir::{Color, Command, DisplayList, FontId, GlyphRun, Paint, PositionedGlyph};
@@ -25,16 +26,49 @@ enum Align {
     Right,
 }
 
+/// Partial run properties — `None` means "inherit". Used for direct overrides,
+/// style definitions, and docDefaults so style inheritance can be resolved.
+#[derive(Clone, Default)]
+struct RPr {
+    bold: Option<bool>,
+    size: Option<f32>, // px
+    color: Option<Color>,
+}
+
+/// Partial paragraph properties.
+#[derive(Clone, Default)]
+struct PPr {
+    align: Option<Align>,
+}
+
+fn overlay_rpr(base: &mut RPr, top: &RPr) {
+    if top.bold.is_some() {
+        base.bold = top.bold;
+    }
+    if top.size.is_some() {
+        base.size = top.size;
+    }
+    if top.color.is_some() {
+        base.color = top.color;
+    }
+}
+
 #[derive(Clone)]
 struct Run {
     text: String,
+    direct: RPr,
+    r_style: Option<String>,
+    // resolved by resolve_document():
     bold: bool,
-    size: f32, // px
+    size: f32,
     color: Color,
 }
 
 struct Para {
     runs: Vec<Run>,
+    direct: PPr,
+    p_style: Option<String>,
+    // resolved by resolve_document():
     align: Align,
 }
 
@@ -93,47 +127,64 @@ fn parse_document(xml: &str) -> Document {
     let mut buf = Vec::new();
 
     let mut cur_para: Option<Para> = None;
-    let mut cur_align = Align::Left;
     let mut cur_run: Option<Run> = None;
     let mut in_t = false;
 
     let open = |doc: &mut Document,
-                    cur_para: &mut Option<Para>,
-                    cur_align: &mut Align,
-                    cur_run: &mut Option<Run>,
-                    in_t: &mut bool,
-                    e: &BytesStart| {
+                cur_para: &mut Option<Para>,
+                cur_run: &mut Option<Run>,
+                in_t: &mut bool,
+                e: &BytesStart| {
         match e.name().as_ref() {
             b"w:p" => {
-                *cur_align = Align::Left;
-                *cur_para = Some(Para { runs: Vec::new(), align: Align::Left });
+                *cur_para = Some(Para { runs: Vec::new(), direct: PPr::default(), p_style: None, align: Align::Left });
+            }
+            b"w:pStyle" => {
+                // Only the paragraph-level pStyle (in pPr, before any run).
+                if cur_run.is_none() {
+                    if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val")) {
+                        p.p_style = Some(v);
+                    }
+                }
             }
             b"w:jc" => {
-                if cur_para.is_some() {
-                    *cur_align = match get_attr(e, b"w:val").as_deref() {
+                if let Some(p) = cur_para.as_mut() {
+                    p.direct.align = Some(match get_attr(e, b"w:val").as_deref() {
                         Some("center") => Align::Center,
                         Some("right") | Some("end") => Align::Right,
                         _ => Align::Left,
-                    };
+                    });
                 }
             }
             b"w:r" => {
-                *cur_run = Some(Run { text: String::new(), bold: false, size: DEFAULT_SIZE_PX, color: Color::BLACK });
+                *cur_run = Some(Run {
+                    text: String::new(),
+                    direct: RPr::default(),
+                    r_style: None,
+                    bold: false,
+                    size: DEFAULT_SIZE_PX,
+                    color: Color::BLACK,
+                });
+            }
+            b"w:rStyle" => {
+                if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val")) {
+                    r.r_style = Some(v);
+                }
             }
             b"w:b" => {
                 if let Some(r) = cur_run.as_mut() {
-                    r.bold = get_attr(e, b"w:val").as_deref() != Some("false")
-                        && get_attr(e, b"w:val").as_deref() != Some("0");
+                    let v = get_attr(e, b"w:val");
+                    r.direct.bold = Some(!matches!(v.as_deref(), Some("false") | Some("0") | Some("off")));
                 }
             }
             b"w:sz" => {
                 if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<f32>().ok())) {
-                    r.size = v * 2.0 / 3.0; // half-points -> px
+                    r.direct.size = Some(v * 2.0 / 3.0); // half-points -> px
                 }
             }
             b"w:color" => {
                 if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val")) {
-                    r.color = parse_color(&v);
+                    r.direct.color = Some(parse_color(&v));
                 }
             }
             b"w:t" => *in_t = true,
@@ -166,7 +217,7 @@ fn parse_document(xml: &str) -> Document {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                open(&mut doc, &mut cur_para, &mut cur_align, &mut cur_run, &mut in_t, &e);
+                open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &e);
             }
             Ok(Event::Text(t)) => {
                 if in_t {
@@ -185,8 +236,7 @@ fn parse_document(xml: &str) -> Document {
                     }
                 }
                 b"w:p" => {
-                    if let Some(mut p) = cur_para.take() {
-                        p.align = cur_align;
+                    if let Some(p) = cur_para.take() {
                         doc.paras.push(p);
                     }
                 }
@@ -343,10 +393,13 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
 
 /// Lay out and render a DOCX into a single continuous page (no pagination).
 pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
-    let doc = match read_document_xml(bytes) {
-        Some(xml) => parse_document(&xml),
+    let xml = match read_zip_entry(bytes, "word/document.xml") {
+        Some(x) => x,
         None => return DisplayList::new(816.0, 200.0),
     };
+    let mut doc = parse_document(&xml);
+    let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
+    resolve_document(&mut doc, &table);
     let lines = layout_lines(&doc, font);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
@@ -373,7 +426,7 @@ pub struct DocxDoc {
 
 impl DocxDoc {
     pub fn parse(bytes: &[u8], font: &FontData) -> DocxDoc {
-        let doc = read_document_xml(bytes).map(|x| parse_document(&x)).unwrap_or_else(|| Document {
+        let mut doc = read_zip_entry(bytes, "word/document.xml").map(|x| parse_document(&x)).unwrap_or_else(|| Document {
             paras: Vec::new(),
             page_w: 816.0,
             page_h: 1056.0,
@@ -382,6 +435,8 @@ impl DocxDoc {
             margin_t: 96.0,
             margin_b: 96.0,
         });
+        let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
+        resolve_document(&mut doc, &table);
         let lines = layout_lines(&doc, font);
         let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
 
@@ -427,10 +482,203 @@ fn max_para_size(para: &Para) -> f32 {
     para.runs.iter().map(|r| r.size).fold(DEFAULT_SIZE_PX, f32::max)
 }
 
-fn read_document_xml(bytes: &[u8]) -> Option<String> {
+fn read_zip_entry(bytes: &[u8], name: &str) -> Option<String> {
     let mut zip = ZipArchive::new(Cursor::new(bytes.to_vec())).ok()?;
-    let mut f = zip.by_name("word/document.xml").ok()?;
+    let mut f = zip.by_name(name).ok()?;
     let mut s = String::new();
     f.read_to_string(&mut s).ok()?;
     Some(s)
+}
+
+// --- styles.xml inheritance ------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum StyleKind {
+    Paragraph,
+    Character,
+}
+
+#[derive(Clone)]
+struct Style {
+    #[allow(dead_code)]
+    kind: StyleKind,
+    based_on: Option<String>,
+    rpr: RPr,
+    ppr: PPr,
+}
+
+#[derive(Default)]
+struct StyleTable {
+    styles: HashMap<String, Style>,
+    default_rpr: RPr,
+    default_ppr: PPr,
+}
+
+/// Synthetic fallback for common built-in styles referenced but not defined
+/// (lightweight generators often `pStyle="Heading1"` without a styles.xml entry).
+fn builtin_style(id: &str) -> Option<(RPr, PPr)> {
+    let bold = |s: Option<f32>| RPr { bold: Some(true), size: s, color: None };
+    match id {
+        "Title" => Some((bold(Some(28.0)), PPr { align: Some(Align::Center) })),
+        "Heading1" => Some((bold(Some(24.0)), PPr::default())),
+        "Heading2" => Some((bold(Some(20.0)), PPr::default())),
+        "Heading3" => Some((bold(Some(17.0)), PPr::default())),
+        "Heading4" => Some((bold(Some(15.0)), PPr::default())),
+        "Heading5" | "Heading6" => Some((bold(None), PPr::default())),
+        _ => None,
+    }
+}
+
+fn parse_styles_xml(xml: &str) -> StyleTable {
+    let mut table = StyleTable::default();
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut in_doc_defaults = false;
+    let mut cur_id: Option<String> = None;
+    let mut cur: Option<Style> = None;
+
+    let bold_val = |e: &BytesStart| -> bool {
+        !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off"))
+    };
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
+                b"w:docDefaults" => in_doc_defaults = true,
+                b"w:style" => {
+                    let kind = match get_attr(&e, b"w:type").as_deref() {
+                        Some("character") => StyleKind::Character,
+                        _ => StyleKind::Paragraph,
+                    };
+                    cur_id = get_attr(&e, b"w:styleId");
+                    cur = Some(Style { kind, based_on: None, rpr: RPr::default(), ppr: PPr::default() });
+                }
+                b"w:basedOn" => {
+                    if let Some(s) = cur.as_mut() {
+                        s.based_on = get_attr(&e, b"w:val");
+                    }
+                }
+                b"w:b" => {
+                    let v = Some(bold_val(&e));
+                    if in_doc_defaults {
+                        table.default_rpr.bold = v;
+                    } else if let Some(s) = cur.as_mut() {
+                        s.rpr.bold = v;
+                    }
+                }
+                b"w:sz" => {
+                    if let Some(px) = get_attr(&e, b"w:val").and_then(|s| s.parse::<f32>().ok()).map(|v| v * 2.0 / 3.0) {
+                        if in_doc_defaults {
+                            table.default_rpr.size = Some(px);
+                        } else if let Some(s) = cur.as_mut() {
+                            s.rpr.size = Some(px);
+                        }
+                    }
+                }
+                b"w:color" => {
+                    if let Some(c) = get_attr(&e, b"w:val").map(|v| parse_color(&v)) {
+                        if in_doc_defaults {
+                            table.default_rpr.color = Some(c);
+                        } else if let Some(s) = cur.as_mut() {
+                            s.rpr.color = Some(c);
+                        }
+                    }
+                }
+                b"w:jc" => {
+                    let a = match get_attr(&e, b"w:val").as_deref() {
+                        Some("center") => Align::Center,
+                        Some("right") | Some("end") => Align::Right,
+                        _ => Align::Left,
+                    };
+                    if in_doc_defaults {
+                        table.default_ppr.align = Some(a);
+                    } else if let Some(s) = cur.as_mut() {
+                        s.ppr.align = Some(a);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"w:docDefaults" => in_doc_defaults = false,
+                b"w:style" => {
+                    if let (Some(id), Some(s)) = (cur_id.take(), cur.take()) {
+                        table.styles.insert(id, s);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    table
+}
+
+/// Style ids from a style following its `basedOn` chain: `[derived..root]`.
+fn style_chain(table: &StyleTable, start: &str) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let mut cur = Some(start.to_string());
+    while let Some(id) = cur {
+        if !seen.insert(id.clone()) {
+            break;
+        }
+        cur = table.styles.get(&id).and_then(|s| s.based_on.clone());
+        chain.push(id);
+    }
+    chain
+}
+
+fn style_rpr(table: &StyleTable, id: &str) -> RPr {
+    table.styles.get(id).map(|s| s.rpr.clone()).unwrap_or_else(|| builtin_style(id).map(|(r, _)| r).unwrap_or_default())
+}
+fn style_align(table: &StyleTable, id: &str) -> Option<Align> {
+    table.styles.get(id).map(|s| s.ppr.align).unwrap_or_else(|| builtin_style(id).and_then(|(_, p)| p.align))
+}
+
+fn resolve_run_rpr(table: &StyleTable, p_style: Option<&str>, r_style: Option<&str>, direct: &RPr) -> RPr {
+    let mut acc = RPr::default();
+    overlay_rpr(&mut acc, &table.default_rpr);
+    if let Some(ps) = p_style {
+        for id in style_chain(table, ps).iter().rev() {
+            overlay_rpr(&mut acc, &style_rpr(table, id));
+        }
+    }
+    if let Some(cs) = r_style {
+        for id in style_chain(table, cs).iter().rev() {
+            overlay_rpr(&mut acc, &style_rpr(table, id));
+        }
+    }
+    overlay_rpr(&mut acc, direct);
+    acc
+}
+
+fn resolve_para_align(table: &StyleTable, p_style: Option<&str>, direct: &PPr) -> Align {
+    let mut acc = table.default_ppr.align;
+    if let Some(ps) = p_style {
+        for id in style_chain(table, ps).iter().rev() {
+            if let Some(a) = style_align(table, id) {
+                acc = Some(a);
+            }
+        }
+    }
+    if let Some(a) = direct.align {
+        acc = Some(a);
+    }
+    acc.unwrap_or(Align::Left)
+}
+
+/// Bake resolved (size/bold/color/align) into each run/paragraph.
+fn resolve_document(doc: &mut Document, table: &StyleTable) {
+    for para in &mut doc.paras {
+        para.align = resolve_para_align(table, para.p_style.as_deref(), &para.direct);
+        let p_style = para.p_style.clone();
+        for run in &mut para.runs {
+            let rpr = resolve_run_rpr(table, p_style.as_deref(), run.r_style.as_deref(), &run.direct);
+            run.bold = rpr.bold.unwrap_or(false);
+            run.size = rpr.size.unwrap_or(DEFAULT_SIZE_PX);
+            run.color = rpr.color.unwrap_or(Color::BLACK);
+        }
+    }
 }
