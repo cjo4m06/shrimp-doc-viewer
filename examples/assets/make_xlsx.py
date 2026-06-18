@@ -9,8 +9,10 @@ Usage: python3 make_xlsx.py out.xlsx
 import sys
 import zipfile
 
-# (text, is_number) per cell, row-major.
+# Row 1 is a title merged across A1:D1; the table follows from row 2.
+TITLE = "2024 年水果銷售統計表"
 ROWS = [
+    [TITLE, None, None, None],  # row 1 (merged)
     ["產品", "數量", "單價", "小計"],
     ["蘋果", 10, 35, 350],
     ["香蕉", 20, 18, 360],
@@ -18,6 +20,9 @@ ROWS = [
     ["葡萄", 8, 60, 480],
     ["合計", 53, None, 1565],
 ]
+MERGES = ["A1:D1"]
+# (min_col, max_col, width-in-chars)
+COLS = [(1, 1, 18), (2, 2, 9), (3, 3, 9), (4, 4, 11)]
 
 CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -85,12 +90,17 @@ def main(path):
         f'count="{len(strings)}" uniqueCount="{len(strings)}">{sst_items}</sst>'
     )
 
+    cols_xml = "".join(
+        f'<col min="{lo}" max="{hi}" width="{w}" customWidth="1"/>' for (lo, hi, w) in COLS
+    )
+    merges_xml = "".join(f'<mergeCell ref="{m}"/>' for m in MERGES)
     sheet = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<dimension ref="A1:{col_letter(len(ROWS[0]) - 1)}{len(ROWS)}"/>'
-        '<cols><col min="1" max="1" width="14" customWidth="1"/></cols>'
+        f'<cols>{cols_xml}</cols>'
         f'<sheetData>{"".join(rows_xml)}</sheetData>'
+        f'<mergeCells count="{len(MERGES)}">{merges_xml}</mergeCells>'
         '</worksheet>'
     )
 

@@ -9,6 +9,8 @@ description = "Self-written XLSX grid renderer for doc-viewer: parses values (ca
 dv-ir.workspace = true
 dv-text.workspace = true
 calamine = "0.26"
+quick-xml = "0.31"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 # Native PNG smoke test (examples/xlsx_demo.rs) rasterizes the display list.

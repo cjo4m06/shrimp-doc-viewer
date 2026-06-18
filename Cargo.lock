@@ -201,6 +201,8 @@ dependencies = [
  "dv-ir",
  "dv-render",
  "dv-text",
+ "quick-xml",
+ "zip",
 ]
 
 [[package]]

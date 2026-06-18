@@ -1,14 +1,20 @@
 //! Self-written XLSX grid renderer.
 //!
-//! M3.1 scope: parse cell *values* with `calamine` and lower a sheet into the
-//! shared [`dv_ir::DisplayList`] as a spreadsheet grid — column-letter / row-number
-//! headers, grid lines, and per-cell text (shaped through the shared text stack,
-//! truncated to the cell width, numbers right-aligned). Real column widths / row
-//! heights, merged cells, styles, and number formats come in later steps; this
-//! is the first format that actually exercises the Rust geba.
+//! Values come from `calamine`; the layout/structure layer (column widths, row
+//! heights, merged cells) is parsed from the OOXML in [`model`] and lowered,
+//! together with the values, into the shared [`dv_ir::DisplayList`]. This is the
+//! first format rendered entirely by our own code over the Rust geba.
+//!
+//! Done: headers, grid lines, real column widths & row heights, merged cells,
+//! per-cell text (shaped + truncated, numbers right-aligned). Next: cell styles
+//! (fills/fonts/borders) and a number-format engine.
+
+mod model;
+
+use std::collections::{HashMap, HashSet};
+use std::io::Cursor;
 
 use calamine::{Data, Reader, Xlsx};
-use std::io::Cursor;
 
 use dv_ir::{Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PositionedGlyph, Transform};
 use dv_text::{shape, FontData};
@@ -25,7 +31,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_rows: 200, max_cols: 40, col_width: 90.0, row_height: 22.0, header_w: 44.0, font_size: 13.0 }
+        Self { max_rows: 500, max_cols: 64, col_width: 64.0, row_height: 20.0, header_w: 44.0, font_size: 13.0 }
     }
 }
 
@@ -37,6 +43,7 @@ enum Align {
 }
 
 const GRID: Color = Color::rgb(0xC8, 0xC8, 0xC8);
+const MERGE_BORDER: Color = Color::rgb(0xB0, 0xB4, 0xBA);
 const HEADER_FILL: Color = Color::rgb(0xF0, 0xF1, 0xF3);
 const HEADER_TEXT: Color = Color::rgb(0x44, 0x47, 0x4C);
 const CELL_TEXT: Color = Color::BLACK;
@@ -49,82 +56,129 @@ pub fn sheet_names(bytes: &[u8]) -> Vec<String> {
     }
 }
 
-/// Render one sheet into a display list. `font` is used both to measure and (by
-/// the caller's registry, under [`FontId(0)`]) to paint cell text.
+/// Render one sheet into a display list. `font` is used to measure and (under
+/// [`FontId(0)`] in the caller's registry) to paint cell text.
 pub fn render_sheet(bytes: &[u8], sheet_index: usize, font: &FontData, opts: &Options) -> DisplayList {
-    let mut wb = match Xlsx::new(Cursor::new(bytes.to_vec())) {
-        Ok(w) => w,
-        Err(_) => return DisplayList::new(opts.header_w + opts.col_width, opts.row_height * 2.0),
-    };
-    let names = wb.sheet_names().to_vec();
-    let name = match names.get(sheet_index) {
-        Some(n) => n.clone(),
-        None => return DisplayList::new(opts.header_w + opts.col_width, opts.row_height * 2.0),
-    };
-    let range = match wb.worksheet_range(&name) {
-        Ok(r) => r,
-        Err(_) => return DisplayList::new(opts.header_w + opts.col_width, opts.row_height * 2.0),
-    };
+    let values = read_values(bytes, sheet_index);
+    let geom = model::parse_geometry(bytes, sheet_index, opts.col_width, opts.row_height);
 
-    let (used_rows, used_cols) = range.get_size();
-    let nrows = used_rows.min(opts.max_rows);
-    let ncols = used_cols.min(opts.max_cols);
+    // Extents: the larger of the declared dimension and the cells we actually have.
+    let mut ext_rows = geom.n_rows;
+    let mut ext_cols = geom.n_cols;
+    for &(r, c) in values.keys() {
+        ext_rows = ext_rows.max(r + 1);
+        ext_cols = ext_cols.max(c + 1);
+    }
+    let nrows = (ext_rows as usize).min(opts.max_rows);
+    let ncols = (ext_cols as usize).min(opts.max_cols).max(1);
+    let nrows = nrows.max(1);
 
     let hw = opts.header_w;
-    let hh = opts.row_height; // header row height
-    let cw = opts.col_width;
-    let rh = opts.row_height;
-    let total_w = hw + ncols as f32 * cw;
-    let total_h = hh + nrows as f32 * rh;
+    let hh = opts.row_height;
+
+    // Prefix sums of column/row boundaries (header band first).
+    let mut col_x = vec![hw];
+    for c in 0..ncols {
+        col_x.push(col_x[c] + geom.col_width(c as u32));
+    }
+    let mut row_y = vec![hh];
+    for r in 0..nrows {
+        row_y.push(row_y[r] + geom.row_height(r as u32));
+    }
+    let total_w = col_x[ncols];
+    let total_h = row_y[nrows];
 
     let mut dl = DisplayList::new(total_w, total_h);
 
-    // Header bands (top = column letters, left = row numbers).
+    // Header bands.
     dl.push(fill_rect(0.0, 0.0, total_w, hh, HEADER_FILL));
     dl.push(fill_rect(0.0, 0.0, hw, total_h, HEADER_FILL));
 
-    // Grid lines: verticals then horizontals across the whole area.
+    // Grid lines at every boundary.
+    dl.push(vline(0.0, 0.0, total_h));
     for c in 0..=ncols {
-        let x = hw + c as f32 * cw;
-        dl.push(vline(x, 0.0, total_h));
+        dl.push(vline(col_x[c], 0.0, total_h));
     }
-    dl.push(vline(0.0, 0.0, total_h)); // left edge
+    dl.push(hline(0.0, total_w, 0.0));
     for r in 0..=nrows {
-        let y = hh + r as f32 * rh;
-        dl.push(hline(0.0, total_w, y));
+        dl.push(hline(0.0, total_w, row_y[r]));
     }
-    dl.push(hline(0.0, total_w, 0.0)); // top edge
+
+    // Merged cells: cover interior grid lines, redraw the outer border, mark covered.
+    let mut covered: HashSet<(u32, u32)> = HashSet::new();
+    let mut merge_anchor: HashMap<(u32, u32), (u32, u32)> = HashMap::new(); // top-left -> (r1,c1)
+    for &(r0, c0, r1, c1) in &geom.merges {
+        if (r0 as usize) >= nrows || (c0 as usize) >= ncols {
+            continue;
+        }
+        let r1 = (r1 as usize).min(nrows - 1) as u32;
+        let c1 = (c1 as usize).min(ncols - 1) as u32;
+        let x0 = col_x[c0 as usize];
+        let y0 = row_y[r0 as usize];
+        let x1 = col_x[c1 as usize + 1];
+        let y1 = row_y[r1 as usize + 1];
+        dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, Color::WHITE));
+        dl.push(rect_stroke(x0, y0, x1 - x0, y1 - y0, MERGE_BORDER));
+        for r in r0..=r1 {
+            for c in c0..=c1 {
+                covered.insert((r, c));
+            }
+        }
+        covered.remove(&(r0, c0));
+        merge_anchor.insert((r0, c0), (r1, c1));
+    }
 
     // Header labels.
     for c in 0..ncols {
-        let label = col_letter(c);
-        let x = hw + c as f32 * cw;
-        push_text(&mut dl, font, &label, opts.font_size, x, x + cw, 0.0, hh, Align::Center, HEADER_TEXT);
+        push_text(&mut dl, font, &col_letter(c), opts.font_size, col_x[c], col_x[c + 1], 0.0, hh, Align::Center, HEADER_TEXT);
     }
     for r in 0..nrows {
-        let label = (r + 1).to_string();
-        let y = hh + r as f32 * rh;
-        push_text(&mut dl, font, &label, opts.font_size, 0.0, hw, y, rh, Align::Center, HEADER_TEXT);
+        push_text(&mut dl, font, &(r + 1).to_string(), opts.font_size, 0.0, hw, row_y[r], row_y[r + 1] - row_y[r], Align::Center, HEADER_TEXT);
     }
 
     // Cell values.
-    for r in 0..nrows {
-        for c in 0..ncols {
-            let cell = match range.get((r, c)) {
-                Some(d) => d,
+    for r in 0..nrows as u32 {
+        for c in 0..ncols as u32 {
+            if covered.contains(&(r, c)) {
+                continue;
+            }
+            let (text, align) = match values.get(&(r, c)) {
+                Some(v) => v.clone(),
                 None => continue,
             };
-            let (text, align) = match format_cell(cell) {
-                Some(v) => v,
-                None => continue,
+            let (left, right, top, height) = match merge_anchor.get(&(r, c)) {
+                Some(&(r1, c1)) => (col_x[c as usize], col_x[c1 as usize + 1], row_y[r as usize], row_y[r1 as usize + 1] - row_y[r as usize]),
+                None => (col_x[c as usize], col_x[c as usize + 1], row_y[r as usize], row_y[r as usize + 1] - row_y[r as usize]),
             };
-            let x = hw + c as f32 * cw;
-            let y = hh + r as f32 * rh;
-            push_text(&mut dl, font, &text, opts.font_size, x, x + cw, y, rh, align, CELL_TEXT);
+            push_text(&mut dl, font, &text, opts.font_size, left, right, top, height, align, CELL_TEXT);
         }
     }
 
     dl
+}
+
+fn read_values(bytes: &[u8], sheet_index: usize) -> HashMap<(u32, u32), (String, Align)> {
+    let mut map = HashMap::new();
+    let mut wb = match Xlsx::new(Cursor::new(bytes.to_vec())) {
+        Ok(w) => w,
+        Err(_) => return map,
+    };
+    let names = wb.sheet_names().to_vec();
+    let name = match names.get(sheet_index) {
+        Some(n) => n.clone(),
+        None => return map,
+    };
+    let range = match wb.worksheet_range(&name) {
+        Ok(r) => r,
+        Err(_) => return map,
+    };
+    let (sr, sc) = range.start().unwrap_or((0, 0));
+    for (rr, rc, cell) in range.cells() {
+        if let Some(v) = format_cell(cell) {
+            map.insert((sr + rr as u32, sc + rc as u32), v);
+        }
+    }
+    map
 }
 
 fn format_cell(cell: &Data) -> Option<(String, Align)> {
@@ -169,6 +223,16 @@ fn fill_rect(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x, y + h);
     p.close();
     Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: FillRule::NonZero, transform: Transform::IDENTITY }
+}
+
+fn rect_stroke(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
+    let mut p = PathData::new();
+    p.move_to(x, y);
+    p.line_to(x + w, y);
+    p.line_to(x + w, y + h);
+    p.line_to(x, y + h);
+    p.close();
+    Command::StrokePath { path: p, paint: Paint::Solid(color), width: 1.0, transform: Transform::IDENTITY }
 }
 
 fn vline(x: f32, y0: f32, y1: f32) -> Command {
@@ -217,7 +281,7 @@ fn push_text(
     for g in &shaped.glyphs {
         let adv = g.x_advance * scale;
         if !glyphs.is_empty() && x + adv > max_x + 0.5 {
-            break; // truncate at the cell edge (keep at least one glyph)
+            break;
         }
         glyphs.push(PositionedGlyph { id: g.glyph_id, x: x + g.x_offset * scale, y: baseline - g.y_offset * scale });
         x += adv;
