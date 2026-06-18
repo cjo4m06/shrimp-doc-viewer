@@ -31,8 +31,13 @@ enum Align {
 #[derive(Clone, Default)]
 struct RPr {
     bold: Option<bool>,
-    size: Option<f32>, // px
+    italic: Option<bool>,
+    underline: Option<bool>,
+    strike: Option<bool>,
+    size: Option<f32>,       // px
+    vert_align: Option<i8>,  // 1=superscript, -1=subscript, 0=baseline
     color: Option<Color>,
+    highlight: Option<Color>,
 }
 
 /// Partial paragraph properties.
@@ -45,23 +50,57 @@ fn overlay_rpr(base: &mut RPr, top: &RPr) {
     if top.bold.is_some() {
         base.bold = top.bold;
     }
+    if top.italic.is_some() {
+        base.italic = top.italic;
+    }
+    if top.underline.is_some() {
+        base.underline = top.underline;
+    }
+    if top.strike.is_some() {
+        base.strike = top.strike;
+    }
     if top.size.is_some() {
         base.size = top.size;
     }
+    if top.vert_align.is_some() {
+        base.vert_align = top.vert_align;
+    }
     if top.color.is_some() {
         base.color = top.color;
+    }
+    if top.highlight.is_some() {
+        base.highlight = top.highlight;
     }
 }
 
 #[derive(Clone)]
 struct Run {
-    text: String,
+    text: String, // may contain '\t' (tab) and '\n' (line break) control chars
     direct: RPr,
     r_style: Option<String>,
     // resolved by resolve_document():
     bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
     size: f32,
+    vert_align: i8,
     color: Color,
+    highlight: Option<Color>,
+}
+
+#[derive(Clone)]
+struct ParaBorder {
+    top: bool,
+    bottom: bool,
+    color: Color,
+    size: f32, // px
+}
+
+impl Default for ParaBorder {
+    fn default() -> Self {
+        ParaBorder { top: false, bottom: false, color: Color::BLACK, size: 1.0 }
+    }
 }
 
 struct Para {
@@ -77,12 +116,51 @@ struct Para {
     image_rid: Option<String>,
     image_w: f32,
     image_h: f32,
+    // spacing (px): before/after; line height multiple (0 = auto)
+    spc_before: f32,
+    spc_after: f32,
+    line_mult: f32,    // w:spacing line/240 when lineRule=auto (0 = unset)
+    line_exact: f32,   // exact/atLeast line height px (0 = unset)
+    pbdr: ParaBorder,
+    shd: Option<Color>,
+    tab_stops: Vec<(f32, Align)>, // (position px, alignment)
+    page_break_before: bool,
     // resolved:
     align: Align,
     marker: Option<String>, // bullet/number prefix
     indent: f32,            // body left indent (px)
     hanging: f32,           // first-line marker hang (px)
     image: Option<dv_image::DecodedImage>,
+}
+
+impl Default for Para {
+    fn default() -> Self {
+        Para {
+            runs: Vec::new(),
+            direct: PPr::default(),
+            p_style: None,
+            num_id: None,
+            num_ilvl: 0,
+            d_ind_left: None,
+            d_ind_hanging: None,
+            image_rid: None,
+            image_w: 0.0,
+            image_h: 0.0,
+            spc_before: 0.0,
+            spc_after: 0.0,
+            line_mult: 0.0,
+            line_exact: 0.0,
+            pbdr: ParaBorder::default(),
+            shd: None,
+            tab_stops: Vec::new(),
+            page_break_before: false,
+            align: Align::Left,
+            marker: None,
+            indent: 0.0,
+            hanging: 0.0,
+            image: None,
+        }
+    }
 }
 
 struct Document {
@@ -118,6 +196,30 @@ fn parse_color(s: &str) -> Color {
     Color::rgb(r, g, b)
 }
 
+/// Named `w:highlight` colour -> RGB (`none` -> None).
+fn highlight_color(name: &str) -> Option<Color> {
+    let c = match name {
+        "black" => (0, 0, 0),
+        "blue" => (0, 0, 255),
+        "cyan" => (0, 255, 255),
+        "green" => (0, 255, 0),
+        "magenta" => (255, 0, 255),
+        "red" => (255, 0, 0),
+        "yellow" => (255, 255, 0),
+        "white" => (255, 255, 255),
+        "darkBlue" => (0, 0, 139),
+        "darkCyan" => (0, 139, 139),
+        "darkGreen" => (0, 100, 0),
+        "darkMagenta" => (139, 0, 139),
+        "darkRed" => (139, 0, 0),
+        "darkYellow" => (128, 128, 0),
+        "darkGray" => (169, 169, 169),
+        "lightGray" => (211, 211, 211),
+        _ => return None,
+    };
+    Some(Color::rgb(c.0, c.1, c.2))
+}
+
 fn is_cjk(ch: char) -> bool {
     let c = ch as u32;
     (0x2E80..=0x9FFF).contains(&c)
@@ -143,31 +245,19 @@ fn parse_document(xml: &str) -> Document {
     let mut cur_para: Option<Para> = None;
     let mut cur_run: Option<Run> = None;
     let mut in_t = false;
+    let mut in_tabs = false;
+    let mut in_pbdr = false;
 
     let open = |doc: &mut Document,
                 cur_para: &mut Option<Para>,
                 cur_run: &mut Option<Run>,
                 in_t: &mut bool,
+                in_tabs: &mut bool,
+                in_pbdr: &mut bool,
                 e: &BytesStart| {
         match e.name().as_ref() {
             b"w:p" => {
-                *cur_para = Some(Para {
-                    runs: Vec::new(),
-                    direct: PPr::default(),
-                    p_style: None,
-                    num_id: None,
-                    num_ilvl: 0,
-                    d_ind_left: None,
-                    d_ind_hanging: None,
-                    image_rid: None,
-                    image_w: 0.0,
-                    image_h: 0.0,
-                    align: Align::Left,
-                    marker: None,
-                    indent: 0.0,
-                    hanging: 0.0,
-                    image: None,
-                });
+                *cur_para = Some(Para::default());
             }
             b"w:numId" => {
                 if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
@@ -210,8 +300,13 @@ fn parse_document(xml: &str) -> Document {
                     direct: RPr::default(),
                     r_style: None,
                     bold: false,
+                    italic: false,
+                    underline: false,
+                    strike: false,
                     size: DEFAULT_SIZE_PX,
+                    vert_align: 0,
                     color: Color::BLACK,
+                    highlight: None,
                 });
             }
             b"w:rStyle" => {
@@ -233,6 +328,108 @@ fn parse_document(xml: &str) -> Document {
             b"w:color" => {
                 if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val")) {
                     r.direct.color = Some(parse_color(&v));
+                }
+            }
+            b"w:i" => {
+                if let Some(r) = cur_run.as_mut() {
+                    r.direct.italic = Some(!matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")));
+                }
+            }
+            b"w:u" => {
+                if let Some(r) = cur_run.as_mut() {
+                    r.direct.underline = Some(get_attr(e, b"w:val").as_deref() != Some("none"));
+                }
+            }
+            b"w:strike" => {
+                if let Some(r) = cur_run.as_mut() {
+                    r.direct.strike = Some(!matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")));
+                }
+            }
+            b"w:vertAlign" => {
+                if let Some(r) = cur_run.as_mut() {
+                    r.direct.vert_align = Some(match get_attr(e, b"w:val").as_deref() {
+                        Some("superscript") => 1,
+                        Some("subscript") => -1,
+                        _ => 0,
+                    });
+                }
+            }
+            b"w:highlight" => {
+                if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val")) {
+                    r.direct.highlight = highlight_color(&v);
+                }
+            }
+            b"w:shd" => {
+                let fill = get_attr(e, b"w:fill");
+                let col = fill.as_deref().filter(|f| !f.eq_ignore_ascii_case("auto") && *f != "FFFFFF").map(parse_color);
+                if let Some(r) = cur_run.as_mut() {
+                    if r.direct.highlight.is_none() {
+                        r.direct.highlight = col;
+                    }
+                } else if let Some(p) = cur_para.as_mut() {
+                    p.shd = col;
+                }
+            }
+            b"w:spacing" => {
+                if let Some(p) = cur_para.as_mut() {
+                    if cur_run.is_none() {
+                        if let Some(v) = get_attr(e, b"w:before").and_then(|s| s.parse::<f32>().ok()) {
+                            p.spc_before = v * TWIP_TO_PX;
+                        }
+                        if let Some(v) = get_attr(e, b"w:after").and_then(|s| s.parse::<f32>().ok()) {
+                            p.spc_after = v * TWIP_TO_PX;
+                        }
+                        if let Some(line) = get_attr(e, b"w:line").and_then(|s| s.parse::<f32>().ok()) {
+                            match get_attr(e, b"w:lineRule").as_deref() {
+                                Some("exact") | Some("atLeast") => p.line_exact = line * TWIP_TO_PX,
+                                _ => p.line_mult = line / 240.0,
+                            }
+                        }
+                    }
+                }
+            }
+            b"w:pBdr" => *in_pbdr = true,
+            b"w:top" | b"w:bottom" => {
+                if *in_pbdr {
+                    if let Some(p) = cur_para.as_mut() {
+                        let on = !matches!(get_attr(e, b"w:val").as_deref(), Some("none") | Some("nil") | None);
+                        if e.name().as_ref() == b"w:top" {
+                            p.pbdr.top = on;
+                        } else {
+                            p.pbdr.bottom = on;
+                        }
+                        if let Some(sz) = get_attr(e, b"w:sz").and_then(|s| s.parse::<f32>().ok()) {
+                            p.pbdr.size = (sz / 8.0 * 4.0 / 3.0).max(0.75); // eighths of a point -> px
+                        }
+                        if let Some(c) = get_attr(e, b"w:color") {
+                            p.pbdr.color = parse_color(&c);
+                        }
+                    }
+                }
+            }
+            b"w:tabs" => *in_tabs = true,
+            b"w:tab" => {
+                if *in_tabs {
+                    if let (Some(p), Some(pos)) = (cur_para.as_mut(), get_attr(e, b"w:pos").and_then(|s| s.parse::<f32>().ok())) {
+                        let al = match get_attr(e, b"w:val").as_deref() {
+                            Some("center") => Align::Center,
+                            Some("right") | Some("end") => Align::Right,
+                            _ => Align::Left,
+                        };
+                        p.tab_stops.push((pos * TWIP_TO_PX, al));
+                    }
+                } else if let Some(r) = cur_run.as_mut() {
+                    r.text.push('\t');
+                }
+            }
+            b"w:br" => {
+                if let Some(r) = cur_run.as_mut() {
+                    r.text.push('\n');
+                }
+            }
+            b"w:pageBreakBefore" => {
+                if let Some(p) = cur_para.as_mut() {
+                    p.page_break_before = !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off"));
                 }
             }
             b"w:t" => *in_t = true,
@@ -280,7 +477,7 @@ fn parse_document(xml: &str) -> Document {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &e);
+                open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &mut in_tabs, &mut in_pbdr, &e);
             }
             Ok(Event::Text(t)) => {
                 if in_t {
@@ -291,6 +488,8 @@ fn parse_document(xml: &str) -> Document {
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
+                b"w:tabs" => in_tabs = false,
+                b"w:pBdr" => in_pbdr = false,
                 b"w:r" => {
                     if let (Some(p), Some(r)) = (cur_para.as_mut(), cur_run.take()) {
                         if !r.text.is_empty() {
@@ -315,13 +514,25 @@ fn parse_document(xml: &str) -> Document {
 }
 
 /// One laid-out glyph with the style needed to paint it.
+#[derive(Clone, Copy, PartialEq)]
+enum IKind {
+    Glyph,
+    Tab,
+    Break,
+}
+
 struct Item {
+    kind: IKind,
     gid: u32,
     advance: f32,
     x_off: f32,
     size: f32,
     color: Color,
     bold: bool,
+    underline: bool,
+    strike: bool,
+    highlight: Option<Color>,
+    vshift: f32, // baseline shift px (negative = up, for super/subscript)
     break_after: bool,
     is_space: bool,
 }
@@ -329,24 +540,74 @@ struct Item {
 fn shape_para(font: &FontData, para: &Para) -> Vec<Item> {
     let mut items = Vec::new();
     for run in &para.runs {
-        let shaped = shape(font, &run.text, run.size);
-        let scale = run.size / shaped.units_per_em.max(1.0);
-        for g in &shaped.glyphs {
-            let ch = run.text.get(g.cluster as usize..).and_then(|s| s.chars().next()).unwrap_or(' ');
-            let is_space = ch.is_whitespace();
-            items.push(Item {
-                gid: g.glyph_id,
-                advance: g.x_advance * scale,
-                x_off: g.x_offset * scale,
-                size: run.size,
-                color: run.color,
-                bold: run.bold,
-                break_after: is_space || is_cjk(ch),
-                is_space,
-            });
+        let (sz, vshift) = match run.vert_align {
+            1 => (run.size * 0.65, -run.size * 0.33),
+            -1 => (run.size * 0.65, run.size * 0.12),
+            _ => (run.size, 0.0),
+        };
+        // Split on tab/break control chars; shape the text segments.
+        let mut seg = String::new();
+        let flush = |seg: &mut String, items: &mut Vec<Item>| {
+            if seg.is_empty() {
+                return;
+            }
+            let shaped = shape(font, seg, sz);
+            let scale = sz / shaped.units_per_em.max(1.0);
+            for g in &shaped.glyphs {
+                let ch = seg.get(g.cluster as usize..).and_then(|s| s.chars().next()).unwrap_or(' ');
+                let is_space = ch.is_whitespace();
+                items.push(Item {
+                    kind: IKind::Glyph,
+                    gid: g.glyph_id,
+                    advance: g.x_advance * scale,
+                    x_off: g.x_offset * scale,
+                    size: sz,
+                    color: run.color,
+                    bold: run.bold,
+                    underline: run.underline,
+                    strike: run.strike,
+                    highlight: run.highlight,
+                    vshift,
+                    break_after: is_space || is_cjk(ch),
+                    is_space,
+                });
+            }
+            seg.clear();
+        };
+        for ch in run.text.chars() {
+            match ch {
+                '\t' => {
+                    flush(&mut seg, &mut items);
+                    items.push(ctrl_item(IKind::Tab, run));
+                }
+                '\n' => {
+                    flush(&mut seg, &mut items);
+                    items.push(ctrl_item(IKind::Break, run));
+                }
+                _ => seg.push(ch),
+            }
         }
+        flush(&mut seg, &mut items);
     }
     items
+}
+
+fn ctrl_item(kind: IKind, run: &Run) -> Item {
+    Item {
+        kind,
+        gid: 0,
+        advance: 0.0,
+        x_off: 0.0,
+        size: run.size,
+        color: run.color,
+        bold: false,
+        underline: false,
+        strike: false,
+        highlight: None,
+        vshift: 0.0,
+        break_after: true,
+        is_space: true,
+    }
 }
 
 fn wrap(items: Vec<Item>, content_w: f32) -> Vec<Vec<Item>> {
@@ -357,6 +618,12 @@ fn wrap(items: Vec<Item>, content_w: f32) -> Vec<Vec<Item>> {
     let last_break = |line: &[Item]| line.iter().rposition(|it| it.break_after);
 
     for it in items {
+        if it.kind == IKind::Break {
+            // explicit line break (w:br): end this line, drop the marker
+            lines.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+            continue;
+        }
         if !cur.is_empty() && cur_w + it.advance > content_w {
             if let Some(bi) = last_break(&cur) {
                 let remainder = cur.split_off(bi + 1);
@@ -620,9 +887,14 @@ fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
 struct PlacedGlyph {
     id: u32,
     x: f32,
+    advance: f32,
     size: f32,
     color: Color,
     bold: bool,
+    underline: bool,
+    strike: bool,
+    highlight: Option<Color>,
+    vshift: f32,
 }
 
 /// An image placed on its own line (page-relative, at zoom 1).
@@ -643,6 +915,26 @@ struct Line {
     line_h: f32,
     advance: f32, // line_h + trailing paragraph spacing
     ascent: f32,
+    // paragraph background + borders (drawn across [left,right])
+    shd: Option<Color>,
+    bdr_top: Option<(Color, f32)>,
+    bdr_bottom: Option<(Color, f32)>,
+    left: f32,
+    right: f32,
+}
+
+/// Next left tab stop strictly greater than `x` (px, absolute). Uses defined
+/// stops, else a default 0.5in grid from the left margin.
+fn next_tab(x: f32, margin_l: f32, stops: &[(f32, Align)]) -> f32 {
+    for (pos, _) in stops {
+        let abs = margin_l + pos;
+        if abs > x + 0.5 {
+            return abs;
+        }
+    }
+    let grid = 48.0; // 0.5 inch
+    let rel = (x - margin_l).max(0.0);
+    margin_l + ((rel / grid).floor() + 1.0) * grid
 }
 
 /// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
@@ -653,6 +945,8 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
     for para in &doc.paras {
         let body_left = doc.margin_l + para.indent;
         let content_w = (doc.page_w - doc.margin_r - body_left).max(32.0);
+        let right = doc.page_w - doc.margin_r;
+        top += para.spc_before;
 
         // Inline image paragraph: render as its own block, scaled to fit width.
         if let Some(img) = &para.image {
@@ -662,7 +956,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 h *= content_w / w;
                 w = content_w;
             }
-            let space = max_para_size(para) * 0.45;
+            let space = para.spc_after.max(max_para_size(para) * 0.3);
             lines.push(Line {
                 placed: Vec::new(),
                 image: Some(ImageBox { rgba: img.rgba.clone(), src_w: img.width, src_h: img.height, x: body_left, w, h }),
@@ -670,24 +964,49 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 line_h: h,
                 advance: h + space,
                 ascent: h,
+                shd: None,
+                bdr_top: None,
+                bdr_bottom: None,
+                left: body_left,
+                right,
             });
             top += h + space;
             continue;
         }
 
+        let bdr_top = if para.pbdr.top { Some((para.pbdr.color, para.pbdr.size)) } else { None };
+        let bdr_bottom = if para.pbdr.bottom { Some((para.pbdr.color, para.pbdr.size)) } else { None };
+
         let items = shape_para(font, para);
         if items.is_empty() {
-            let line_h = DEFAULT_SIZE_PX * 1.4;
-            lines.push(Line { placed: Vec::new(), image: None, top, line_h, advance: line_h, ascent: DEFAULT_SIZE_PX * 0.92 });
-            top += line_h;
+            let line_h = if para.line_exact > 0.0 { para.line_exact } else { DEFAULT_SIZE_PX * 1.2 };
+            lines.push(Line {
+                placed: Vec::new(),
+                image: None,
+                top,
+                line_h,
+                advance: line_h + para.spc_after,
+                ascent: DEFAULT_SIZE_PX * 0.92,
+                shd: para.shd,
+                bdr_top,
+                bdr_bottom,
+                left: body_left,
+                right,
+            });
+            top += line_h + para.spc_after;
             continue;
         }
         let wrapped = wrap(items, content_w);
         let n = wrapped.len();
-        let para_space = max_para_size(para) * 0.45;
         for (li, line) in wrapped.iter().enumerate() {
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
-            let line_h = max_size * 1.4;
+            let line_h = if para.line_exact > 0.0 {
+                para.line_exact
+            } else if para.line_mult > 0.0 {
+                max_size * para.line_mult
+            } else {
+                max_size * 1.2
+            };
             let lw = line_width(line);
             let mut x = match para.align {
                 Align::Left => body_left,
@@ -705,18 +1024,56 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                     let sc = msize / shaped.units_per_em.max(1.0);
                     let mut mx = body_left - para.hanging;
                     for g in &shaped.glyphs {
-                        placed.push(PlacedGlyph { id: g.glyph_id, x: mx + g.x_offset * sc, size: msize, color: mcolor, bold: false });
+                        placed.push(PlacedGlyph {
+                            id: g.glyph_id,
+                            x: mx + g.x_offset * sc,
+                            advance: g.x_advance * sc,
+                            size: msize,
+                            color: mcolor,
+                            bold: false,
+                            underline: false,
+                            strike: false,
+                            highlight: None,
+                            vshift: 0.0,
+                        });
                         mx += g.x_advance * sc;
                     }
                 }
             }
 
             for it in line {
-                placed.push(PlacedGlyph { id: it.gid, x: x + it.x_off, size: it.size, color: it.color, bold: it.bold });
+                if it.kind == IKind::Tab {
+                    x = next_tab(x, doc.margin_l, &para.tab_stops);
+                    continue;
+                }
+                placed.push(PlacedGlyph {
+                    id: it.gid,
+                    x: x + it.x_off,
+                    advance: it.advance,
+                    size: it.size,
+                    color: it.color,
+                    bold: it.bold,
+                    underline: it.underline,
+                    strike: it.strike,
+                    highlight: it.highlight,
+                    vshift: it.vshift,
+                });
                 x += it.advance;
             }
-            let advance = line_h + if li + 1 == n { para_space } else { 0.0 };
-            lines.push(Line { placed, image: None, top, line_h, advance, ascent: max_size * 0.92 });
+            let advance = line_h + if li + 1 == n { para.spc_after } else { 0.0 };
+            lines.push(Line {
+                placed,
+                image: None,
+                top,
+                line_h,
+                advance,
+                ascent: max_size * 0.92,
+                shd: para.shd,
+                bdr_top: if li == 0 { bdr_top } else { None },
+                bdr_bottom: if li + 1 == n { bdr_bottom } else { None },
+                left: body_left,
+                right,
+            });
             top += advance;
         }
     }
@@ -739,16 +1096,87 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
         });
         return;
     }
+
+    // Paragraph shading + borders span the full body width.
+    let top_y = baseline - line.ascent * scale;
+    let bot_y = top_y + line.line_h * scale;
+    let (lx, rx) = (line.left * scale, line.right * scale);
+    if let Some(c) = line.shd {
+        dl.push(fill_box(lx, top_y, rx - lx, bot_y - top_y, c));
+    }
+    if let Some((c, w)) = line.bdr_top {
+        dl.push(fill_box(lx, top_y, rx - lx, (w * scale).max(1.0), c));
+    }
+    if let Some((c, w)) = line.bdr_bottom {
+        dl.push(fill_box(lx, bot_y - (w * scale).max(1.0), rx - lx, (w * scale).max(1.0), c));
+    }
+
+    // Run highlight backgrounds (group consecutive glyphs sharing a highlight).
     let mut i = 0;
     while i < line.placed.len() {
-        let (size, color, bold) = (line.placed[i].size, line.placed[i].color, line.placed[i].bold);
-        let mut glyphs = Vec::new();
-        while i < line.placed.len() && line.placed[i].size == size && line.placed[i].color == color && line.placed[i].bold == bold {
-            glyphs.push(PositionedGlyph { id: line.placed[i].id, x: line.placed[i].x * scale, y: baseline });
+        let hl = line.placed[i].highlight;
+        let x0 = line.placed[i].x;
+        let mut x1 = x0;
+        let mut sz = line.placed[i].size;
+        while i < line.placed.len() && line.placed[i].highlight == hl {
+            x1 = line.placed[i].x + line.placed[i].advance;
+            sz = sz.max(line.placed[i].size);
             i += 1;
         }
-        dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: size * scale, paint: Paint::Solid(color), bold, glyphs }));
+        if let Some(c) = hl {
+            dl.push(fill_box(x0 * scale, baseline - sz * 0.82 * scale, (x1 - x0) * scale, sz * 1.02 * scale, c));
+        }
     }
+
+    // Glyphs grouped by (size, color, bold, vshift).
+    let mut i = 0;
+    while i < line.placed.len() {
+        let g0 = line.placed[i];
+        let mut glyphs = Vec::new();
+        while i < line.placed.len()
+            && line.placed[i].size == g0.size
+            && line.placed[i].color == g0.color
+            && line.placed[i].bold == g0.bold
+            && line.placed[i].vshift == g0.vshift
+        {
+            glyphs.push(PositionedGlyph { id: line.placed[i].id, x: line.placed[i].x * scale, y: baseline + g0.vshift * scale });
+            i += 1;
+        }
+        dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: g0.size * scale, paint: Paint::Solid(g0.color), bold: g0.bold, glyphs }));
+    }
+
+    // Underline / strike rules (group consecutive runs sharing the decoration).
+    for deco in 0..2 {
+        let mut i = 0;
+        while i < line.placed.len() {
+            let on = if deco == 0 { line.placed[i].underline } else { line.placed[i].strike };
+            let x0 = line.placed[i].x;
+            let (mut x1, mut sz, col) = (x0, line.placed[i].size, line.placed[i].color);
+            while i < line.placed.len()
+                && (if deco == 0 { line.placed[i].underline } else { line.placed[i].strike }) == on
+                && line.placed[i].color == col
+            {
+                x1 = line.placed[i].x + line.placed[i].advance;
+                sz = sz.max(line.placed[i].size);
+                i += 1;
+            }
+            if on && x1 > x0 {
+                let y = if deco == 0 { baseline + sz * 0.12 * scale } else { baseline - sz * 0.28 * scale };
+                dl.push(fill_box(x0 * scale, y, (x1 - x0) * scale, (sz * 0.06 * scale).max(1.0), col));
+            }
+        }
+    }
+}
+
+/// A solid axis-aligned rectangle (device coords).
+fn fill_box(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
+    let mut p = dv_ir::PathData::new();
+    p.move_to(x, y);
+    p.line_to(x + w, y);
+    p.line_to(x + w, y + h);
+    p.line_to(x, y + h);
+    p.close();
+    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY }
 }
 
 /// Lay out and render a DOCX into a single continuous page (no pagination).
@@ -949,7 +1377,7 @@ struct StyleTable {
 /// Synthetic fallback for common built-in styles referenced but not defined
 /// (lightweight generators often `pStyle="Heading1"` without a styles.xml entry).
 fn builtin_style(id: &str) -> Option<(RPr, PPr)> {
-    let bold = |s: Option<f32>| RPr { bold: Some(true), size: s, color: None };
+    let bold = |s: Option<f32>| RPr { bold: Some(true), size: s, ..RPr::default() };
     match id {
         "Title" => Some((bold(Some(28.0)), PPr { align: Some(Align::Center) })),
         "Heading1" => Some((bold(Some(24.0)), PPr::default())),
@@ -1109,8 +1537,13 @@ fn resolve_document(doc: &mut Document, table: &StyleTable) {
         for run in &mut para.runs {
             let rpr = resolve_run_rpr(table, p_style.as_deref(), run.r_style.as_deref(), &run.direct);
             run.bold = rpr.bold.unwrap_or(false);
+            run.italic = rpr.italic.unwrap_or(false);
+            run.underline = rpr.underline.unwrap_or(false);
+            run.strike = rpr.strike.unwrap_or(false);
             run.size = rpr.size.unwrap_or(DEFAULT_SIZE_PX);
+            run.vert_align = rpr.vert_align.unwrap_or(0);
             run.color = rpr.color.unwrap_or(Color::BLACK);
+            run.highlight = rpr.highlight;
         }
     }
 }
