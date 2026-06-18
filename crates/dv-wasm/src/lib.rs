@@ -54,6 +54,7 @@ pub fn render_text_demo(
         font: FontId(0),
         size,
         paint: Paint::Solid(Color::BLACK),
+        bold: false,
         glyphs,
     }));
 

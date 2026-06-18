@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use dv_ir::{Command, DisplayList, FillRule, FontId, Paint, PathData, PathVerb, Transform};
 use dv_text::FontData;
 use tiny_skia::{
-    Color as SkColor, FillRule as SkFillRule, Paint as SkPaint, PathBuilder, Pixmap,
-    Stroke, Transform as SkTransform,
+    Color as SkColor, FillRule as SkFillRule, LineCap, LineJoin, Paint as SkPaint, PathBuilder,
+    Pixmap, Stroke, Transform as SkTransform,
 };
 
 /// Maps [`FontId`]s used in a display list to actual font bytes. Frontends fill
@@ -106,6 +106,20 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                 let Paint::Solid(c) = run.paint;
                 sp.set_color(sk_color(c));
 
+                // Faux-bold: stroke the outline on top of the fill to thicken it.
+                // The path is in font units and the per-glyph transform scales by
+                // `scale`, so express the ~0.045·em px target in font units.
+                let bold_stroke = if run.bold {
+                    Some(Stroke {
+                        width: run.size * 0.045 / scale,
+                        line_cap: LineCap::Round,
+                        line_join: LineJoin::Round,
+                        ..Stroke::default()
+                    })
+                } else {
+                    None
+                };
+
                 for g in &run.glyphs {
                     let entry = glyph_cache
                         .entry((run.font.0, g.id))
@@ -115,6 +129,9 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                     // baseline at (g.x, g.y).
                     let t = SkTransform::from_row(scale, 0.0, 0.0, -scale, g.x, g.y);
                     pixmap.fill_path(p, &sp, SkFillRule::Winding, t, None);
+                    if let Some(stroke) = &bold_stroke {
+                        pixmap.stroke_path(p, &sp, stroke, t, None);
+                    }
                 }
             }
         }

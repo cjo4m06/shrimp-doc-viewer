@@ -137,6 +137,9 @@ pub struct GlyphRun {
     /// Em size in the same units as the display list (px).
     pub size: f32,
     pub paint: Paint,
+    /// Faux-bold: the backend strokes glyph outlines (used when no bold face is
+    /// loaded). Real bold should select a bold font instead, when available.
+    pub bold: bool,
     pub glyphs: Vec<PositionedGlyph>,
 }
 
