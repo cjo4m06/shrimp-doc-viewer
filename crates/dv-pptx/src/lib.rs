@@ -996,6 +996,7 @@ fn parse_part_shapes(
     let mut in_bg = false;
     let mut in_hl = false; // inside a:highlight
     let mut in_ln = false;
+    let mut ln_width = 1.0f32;
     let mut cur_para: Option<Para> = None;
     let mut spc_target: u8 = 0; // 1=lnSpc 2=spcBef 3=spcAft
     let mut cur_run: Option<Run> = None;
@@ -1136,7 +1137,7 @@ fn parse_part_shapes(
                             bg = Some(col);
                         } else if in_ln {
                             if let Some(s) = cur.as_mut() {
-                                s.outline.get_or_insert(Outline { color: Color::BLACK, width: 1.0 }).color = col;
+                                s.outline = Some(Outline { color: col, width: ln_width });
                             }
                         } else if in_rpr {
                             if let Some(r) = cur_run.as_mut() {
@@ -1200,11 +1201,10 @@ fn parse_part_shapes(
                     }
                 }
                 b"a:ln" => {
+                    // A bare <a:ln/> with no solidFill draws NO line. Remember the
+                    // width; the outline is created only when a line colour appears.
                     in_ln = !empty;
-                    if let Some(s) = cur.as_mut() {
-                        let width = get_attr(&e, b"w").and_then(|v| v.parse::<f32>().ok()).map(|emu| emu / EMU_PER_PX).unwrap_or(1.0);
-                        s.outline = Some(Outline { color: Color::rgb(0x40, 0x40, 0x40), width: width.max(0.75) });
-                    }
+                    ln_width = get_attr(&e, b"w").and_then(|v| v.parse::<f32>().ok()).map(|emu| emu / EMU_PER_PX).unwrap_or(1.0).max(0.75);
                 }
                 b"a:custGeom" => {
                     if let Some(s) = cur.as_mut() {
