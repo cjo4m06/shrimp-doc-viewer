@@ -12,7 +12,8 @@ A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Wo
 >   number formats, **sheet tabs + viewport virtualization + frozen headers + zoom**.
 > - **DOCX — basic.** Self-written flow layout (paragraphs, runs, bold/size/colour,
 >   alignment, CJK+Latin wrapping). One continuous page; no pagination/zoom yet.
-> - **PPTX — not started.**
+> - **PPTX — basic.** Self-written DrawingML: positioned text boxes + solid-fill
+>   shapes, run formatting, slide navigation. No preset geometry/images/theme yet.
 >
 > All three working formats render Latin **and 繁體中文** through one shared geba
 > (display-list IR + skrifa/rustybuzz text stack + tiny-skia raster).
@@ -161,7 +162,13 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
     paragraph alignment. Verified in-browser. *Rendered as one continuous canvas —
     NOT yet paginated/virtualized/zoomable like PDF/XLSX. Remaining: tables, lists,
     images, real pagination, styles.xml inheritance, italic.*
-- **M5** — PPTX viewer: DrawingML shapes/theme inheritance. **Not started.**
+- **M5 — PPTX viewer (self-written DrawingML).**
+  - **M5.1 ✅** — `dv-pptx`: parse `presentation.xml` (slide size/order) + slide
+    `p:sp` shapes (a:off/a:ext EMU position, solid fills, text bodies with run
+    size/bold/colour + alignment); CJK+Latin wrapping per box; `PptxDeck` WASM
+    session + `PptxViewer` (slide nav + fit-width). Verified in-browser on a
+    2-slide deck. *Remaining: preset shape geometry, images, theme/master
+    inheritance, tables, charts.*
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 
