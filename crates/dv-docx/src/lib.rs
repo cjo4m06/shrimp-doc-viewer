@@ -532,11 +532,27 @@ fn parse_document(xml: &str) -> Document {
     let mut tables: Vec<TableBuild> = Vec::new();
     let mut border_ctx: u8 = 0; // 0 none, 1 pBdr, 2 tblBorders, 3 tcBorders
     let mut in_tcpr = false;
+    // depth inside revision-tracking *Change snapshots (pPrChange / tblGridChange /
+    // tcPrChange …) — their contents are stale and must be ignored.
+    let mut in_change: u32 = 0;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        let event = reader.read_event_into(&mut buf);
+        let is_empty = matches!(&event, Ok(Event::Empty(_)));
+        match event {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let name = e.name();
+                if name.as_ref().ends_with(b"Change") {
+                    if !is_empty {
+                        in_change += 1;
+                    }
+                    buf.clear();
+                    continue;
+                }
+                if in_change > 0 {
+                    buf.clear();
+                    continue;
+                }
                 match name.as_ref() {
                     // ---- table structure ----
                     b"w:tbl" => tables.push(TableBuild {
@@ -703,6 +719,10 @@ fn parse_document(xml: &str) -> Document {
                     }
                 }
             }
+            Ok(Event::End(e)) if e.name().as_ref().ends_with(b"Change") => {
+                in_change = in_change.saturating_sub(1);
+            }
+            Ok(Event::End(_)) if in_change > 0 => {}
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:t" => in_t = false,
                 b"w:tabs" => in_tabs = false,
@@ -1212,18 +1232,73 @@ struct Line {
     right: f32,
 }
 
-/// Next left tab stop strictly greater than `x` (px, absolute). Uses defined
-/// stops, else a default 0.5in grid from the left margin.
-fn next_tab(x: f32, margin_l: f32, stops: &[(f32, Align)]) -> f32 {
-    for (pos, _) in stops {
+/// Line height for a paragraph given the line's max font size. `auto` line
+/// spacing (value/240) multiplies the font's natural ~1.2em leading; exact/atLeast
+/// act as a minimum so CJK never overlaps.
+fn para_line_h(para: &Para, max_size: f32) -> f32 {
+    let natural = max_size * 1.2;
+    if para.line_exact > 0.0 {
+        para.line_exact.max(natural)
+    } else if para.line_mult > 0.0 {
+        natural * para.line_mult
+    } else {
+        natural
+    }
+}
+
+/// Next tab stop (absolute px + alignment) strictly greater than `x`. Uses the
+/// paragraph's defined stops, else a default 0.5in left-grid.
+fn next_tab_stop(x: f32, margin_l: f32, stops: &[(f32, Align)]) -> (f32, Align) {
+    for (pos, al) in stops {
         let abs = margin_l + pos;
         if abs > x + 0.5 {
-            return abs;
+            return (abs, *al);
         }
     }
     let grid = 48.0; // 0.5 inch
     let rel = (x - margin_l).max(0.0);
-    margin_l + ((rel / grid).floor() + 1.0) * grid
+    (margin_l + ((rel / grid).floor() + 1.0) * grid, Align::Left)
+}
+
+/// Place a wrapped line's items into glyphs, honouring tab stops + alignment
+/// (left advances to the stop, centre/right align the following segment to it).
+fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)], out: &mut Vec<PlacedGlyph>) {
+    let mut x = x_start;
+    let mut i = 0;
+    while i < line.len() {
+        let it = &line[i];
+        if it.kind == IKind::Tab {
+            let (pos, al) = next_tab_stop(x, margin_l, stops);
+            let mut j = i + 1;
+            while j < line.len() && line[j].kind != IKind::Tab {
+                j += 1;
+            }
+            let w: f32 = line[i + 1..j].iter().filter(|t| t.kind == IKind::Glyph).map(|t| t.advance).sum();
+            x = match al {
+                Align::Left => pos,
+                Align::Center => (pos - w / 2.0).max(x),
+                Align::Right => (pos - w).max(x),
+            };
+            i += 1;
+            continue;
+        }
+        if it.kind == IKind::Glyph {
+            out.push(PlacedGlyph {
+                id: it.gid,
+                x: x + it.x_off,
+                advance: it.advance,
+                size: it.size,
+                color: it.color,
+                bold: it.bold,
+                underline: it.underline,
+                strike: it.strike,
+                highlight: it.highlight,
+                vshift: it.vshift,
+            });
+            x += it.advance;
+        }
+        i += 1;
+    }
 }
 
 /// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
@@ -1282,7 +1357,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
 
         let items = shape_para(font, para);
         if items.is_empty() {
-            let line_h = if para.line_exact > 0.0 { para.line_exact } else { DEFAULT_SIZE_PX * 1.2 };
+            let line_h = para_line_h(para, DEFAULT_SIZE_PX);
             lines.push(Line {
                 placed: Vec::new(),
                 image: None,
@@ -1304,15 +1379,9 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
         let n = wrapped.len();
         for (li, line) in wrapped.iter().enumerate() {
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
-            let line_h = if para.line_exact > 0.0 {
-                para.line_exact
-            } else if para.line_mult > 0.0 {
-                max_size * para.line_mult
-            } else {
-                max_size * 1.2
-            };
+            let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
-            let mut x = match para.align {
+            let x = match para.align {
                 Align::Left => body_left,
                 Align::Center => body_left + (content_w - lw) / 2.0,
                 Align::Right => body_left + (content_w - lw),
@@ -1345,25 +1414,7 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 }
             }
 
-            for it in line {
-                if it.kind == IKind::Tab {
-                    x = next_tab(x, doc.margin_l, &para.tab_stops);
-                    continue;
-                }
-                placed.push(PlacedGlyph {
-                    id: it.gid,
-                    x: x + it.x_off,
-                    advance: it.advance,
-                    size: it.size,
-                    color: it.color,
-                    bold: it.bold,
-                    underline: it.underline,
-                    strike: it.strike,
-                    highlight: it.highlight,
-                    vshift: it.vshift,
-                });
-                x += it.advance;
-            }
+            place_items(line, x, doc.margin_l, &para.tab_stops, &mut placed);
             let advance = line_h + if li + 1 == n { para.spc_after } else { 0.0 };
             lines.push(Line {
                 placed,
@@ -1406,7 +1457,7 @@ fn layout_cell(cell: &Cell, font: &FontData, width: f32) -> (Vec<(u32, f32, f32,
         let n = wrapped.len();
         for (li, line) in wrapped.iter().enumerate() {
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
-            let line_h = if para.line_exact > 0.0 { para.line_exact } else { max_size * 1.2 };
+            let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
             let mut x = match para.align {
                 Align::Left => 0.0,
@@ -1564,6 +1615,17 @@ fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, n
     doc.page_w = page_w;
     doc.margin_l = ml;
     doc.margin_r = mr;
+    // Headers/footers have implicit centre + right tab stops at the content midpoint
+    // and right edge (used to centre / right-align running text against a tab).
+    let content_w = (page_w - ml - mr).max(32.0);
+    for para in &mut doc.blocks {
+        if let Block::Para(p) = para {
+            if p.tab_stops.is_empty() {
+                p.tab_stops.push((content_w / 2.0, Align::Center));
+                p.tab_stops.push((content_w, Align::Right));
+            }
+        }
+    }
     resolve_document(&mut doc, table);
     resolve_numbering(&mut doc, nb);
     let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
