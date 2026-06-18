@@ -233,6 +233,12 @@ struct Document {
     margin_r: f32,
     margin_t: f32,
     margin_b: f32,
+    header_dist: f32,
+    footer_dist: f32,
+    // section header/footer references: (type, relationship id)
+    hdr_refs: Vec<(String, String)>,
+    ftr_refs: Vec<(String, String)>,
+    title_pg: bool,
 }
 
 const DEFAULT_SIZE_PX: f32 = 14.67; // 11pt
@@ -306,6 +312,11 @@ fn parse_document(xml: &str) -> Document {
         margin_r: 96.0,
         margin_t: 96.0,
         margin_b: 96.0,
+        header_dist: 48.0,
+        footer_dist: 48.0,
+        hdr_refs: Vec::new(),
+        ftr_refs: Vec::new(),
+        title_pg: false,
     };
 
     let mut reader = Reader::from_str(xml);
@@ -506,6 +517,12 @@ fn parse_document(xml: &str) -> Document {
                 if let Some(v) = get_attr(e, b"w:bottom").and_then(|s| s.parse::<f32>().ok()) {
                     doc.margin_b = v * TWIP_TO_PX;
                 }
+                if let Some(v) = get_attr(e, b"w:header").and_then(|s| s.parse::<f32>().ok()) {
+                    doc.header_dist = v * TWIP_TO_PX;
+                }
+                if let Some(v) = get_attr(e, b"w:footer").and_then(|s| s.parse::<f32>().ok()) {
+                    doc.footer_dist = v * TWIP_TO_PX;
+                }
             }
             _ => {}
         }
@@ -665,6 +682,17 @@ fn parse_document(xml: &str) -> Document {
                             p.shd = col;
                         }
                     }
+                    b"w:headerReference" => {
+                        if let (Some(ty), Some(id)) = (get_attr(&e, b"w:type"), get_attr(&e, b"r:id")) {
+                            doc.hdr_refs.push((ty, id));
+                        }
+                    }
+                    b"w:footerReference" => {
+                        if let (Some(ty), Some(id)) = (get_attr(&e, b"w:type"), get_attr(&e, b"r:id")) {
+                            doc.ftr_refs.push((ty, id));
+                        }
+                    }
+                    b"w:titlePg" => doc.title_pg = true,
                     _ => open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &mut in_tabs, &e),
                 }
             }
@@ -1216,7 +1244,9 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
         let right = doc.page_w - doc.margin_r;
         top += para.spc_before;
 
-        // Inline image paragraph: render as its own block, scaled to fit width.
+        // Image in the paragraph: render it as a block. If the paragraph ALSO has
+        // text (e.g. a header logo + title), render the image then fall through to
+        // lay out the text below it (rather than dropping the text).
         if let Some(img) = &para.image {
             let mut w = para.image_w.max(1.0);
             let mut h = para.image_h.max(1.0);
@@ -1224,7 +1254,8 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 h *= content_w / w;
                 w = content_w;
             }
-            let space = para.spc_after.max(max_para_size(para) * 0.3);
+            let has_text = para.runs.iter().any(|r| !r.text.is_empty());
+            let space = if has_text { 0.0 } else { para.spc_after.max(max_para_size(para) * 0.3) };
             lines.push(Line {
                 placed: Vec::new(),
                 image: Some(ImageBox { rgba: img.rgba.clone(), src_w: img.width, src_h: img.height, x: body_left, w, h }),
@@ -1240,7 +1271,10 @@ fn layout_lines(doc: &Document, font: &FontData) -> Vec<Line> {
                 right,
             });
             top += h + space;
-            continue;
+            if !has_text {
+                continue;
+            }
+            // else fall through: lay out the paragraph's text below the image
         }
 
         let bdr_top = if para.pbdr.top { Some((para.pbdr.color, para.pbdr.size)) } else { None };
@@ -1517,6 +1551,28 @@ fn layout_table_block(t: &Table, doc: &Document, font: &FontData, lines: &mut Ve
     top + 4.0 // small gap after the table
 }
 
+/// A laid-out header or footer part.
+struct HdrFtr {
+    lines: Vec<Line>,
+    height: f32,
+}
+
+/// Parse + lay out a header/footer part (`word/headerN.xml`).
+fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, nb: &Numbering, page_w: f32, ml: f32, mr: f32) -> Option<HdrFtr> {
+    let xml = read_zip_entry(bytes, part)?;
+    let mut doc = parse_document(&xml);
+    doc.page_w = page_w;
+    doc.margin_l = ml;
+    doc.margin_r = mr;
+    resolve_document(&mut doc, table);
+    resolve_numbering(&mut doc, nb);
+    let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
+    resolve_images(&mut doc, bytes, &rels);
+    let lines = layout_lines(&doc, font);
+    let height = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
+    Some(HdrFtr { lines, height })
+}
+
 /// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
 fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
     if let Some(im) = &line.image {
@@ -1647,7 +1703,7 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
     resolve_document(&mut doc, &table);
     let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
     resolve_numbering(&mut doc, &numbering);
-    resolve_images(&mut doc, bytes);
+    resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
     let lines = layout_lines(&doc, font);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
@@ -1670,6 +1726,13 @@ pub struct DocxDoc {
     page_w: f32,
     page_h: f32,
     margin_t: f32,
+    header_dist: f32,
+    footer_dist: f32,
+    title_pg: bool,
+    hdr_first: Option<HdrFtr>,
+    hdr_default: Option<HdrFtr>,
+    ftr_first: Option<HdrFtr>,
+    ftr_default: Option<HdrFtr>,
 }
 
 impl DocxDoc {
@@ -1682,12 +1745,17 @@ impl DocxDoc {
             margin_r: 96.0,
             margin_t: 96.0,
             margin_b: 96.0,
+            header_dist: 48.0,
+            footer_dist: 48.0,
+            hdr_refs: Vec::new(),
+            ftr_refs: Vec::new(),
+            title_pg: false,
         });
         let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
         resolve_document(&mut doc, &table);
         let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
         resolve_numbering(&mut doc, &numbering);
-        resolve_images(&mut doc, bytes);
+        resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
         let lines = layout_lines(&doc, font);
         let cap = (doc.page_h - doc.margin_t - doc.margin_b).max(32.0);
 
@@ -1706,7 +1774,33 @@ impl DocxDoc {
         }
         pages.push(Page { start, end: lines.len(), top_y: page_top });
 
-        DocxDoc { lines, pages, page_w: doc.page_w, page_h: doc.page_h, margin_t: doc.margin_t }
+        // Resolve + lay out header/footer parts (by reference type).
+        let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+        let part = |refs: &[(String, String)], ty: &str| -> Option<HdrFtr> {
+            let id = refs.iter().find(|(t, _)| t == ty).map(|(_, id)| id)?;
+            let target = doc_rels.get(id)?;
+            let path = resolve_rel("word", target);
+            build_hdrftr(bytes, &path, font, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
+        };
+        let hdr_first = part(&doc.hdr_refs, "first");
+        let hdr_default = part(&doc.hdr_refs, "default");
+        let ftr_first = part(&doc.ftr_refs, "first");
+        let ftr_default = part(&doc.ftr_refs, "default");
+
+        DocxDoc {
+            lines,
+            pages,
+            page_w: doc.page_w,
+            page_h: doc.page_h,
+            margin_t: doc.margin_t,
+            header_dist: doc.header_dist,
+            footer_dist: doc.footer_dist,
+            title_pg: doc.title_pg,
+            hdr_first,
+            hdr_default,
+            ftr_first,
+            ftr_default,
+        }
     }
 
     pub fn page_count(&self) -> usize {
@@ -1720,6 +1814,23 @@ impl DocxDoc {
     pub fn render_page(&self, idx: usize, scale: f32) -> DisplayList {
         let mut dl = DisplayList::new((self.page_w * scale).max(1.0), (self.page_h * scale).max(1.0));
         let Some(page) = self.pages.get(idx) else { return dl };
+
+        // Header (first page uses the "first" header when titlePg is set).
+        let first = idx == 0 && self.title_pg;
+        let hdr = if first { self.hdr_first.as_ref().or(self.hdr_default.as_ref()) } else { self.hdr_default.as_ref() };
+        if let Some(h) = hdr {
+            for line in &h.lines {
+                emit_line(&mut dl, line, (self.header_dist + line.top + line.ascent) * scale, scale);
+            }
+        }
+        let ftr = if first { self.ftr_first.as_ref().or(self.ftr_default.as_ref()) } else { self.ftr_default.as_ref() };
+        if let Some(f) = ftr {
+            let foot_top = (self.page_h - self.footer_dist - f.height).max(self.page_h * 0.85);
+            for line in &f.lines {
+                emit_line(&mut dl, line, (foot_top + line.top + line.ascent) * scale, scale);
+            }
+        }
+
         for li in page.start..page.end {
             let line = &self.lines[li];
             let local_top = self.margin_t + (line.top - page.top_y);
@@ -1786,8 +1897,8 @@ fn resolve_rel(base_dir: &str, target: &str) -> String {
 }
 
 /// Resolve each paragraph's inline image: rels lookup → media bytes → decode.
-fn resolve_images(doc: &mut Document, bytes: &[u8]) {
-    let rels = match read_zip_entry(bytes, "word/_rels/document.xml.rels") {
+fn resolve_images(doc: &mut Document, bytes: &[u8], rels_name: &str) {
+    let rels = match read_zip_entry(bytes, rels_name) {
         Some(s) => rels_map(&s),
         None => return,
     };
