@@ -103,11 +103,19 @@ struct Shape {
     custom: Vec<SubPath>,
     paras: Vec<Para>,
     image: Option<dv_image::DecodedImage>,
+    is_ph: bool,
+}
+
+/// One slide's drawables (master + layout decoration + slide shapes, z-ordered)
+/// plus its resolved background colour.
+struct SlideData {
+    shapes: Vec<Shape>,
+    bg: Option<Color>,
 }
 
 /// A parsed presentation, ready for repeated slide renders.
 pub struct Deck {
-    slides: Vec<Vec<Shape>>,
+    slides: Vec<SlideData>,
     width: f32,
     height: f32,
 }
@@ -154,19 +162,267 @@ fn resolve_rel(base_dir: &str, target: &str) -> String {
 }
 
 fn parse_color(s: &str) -> Color {
-    if s.len() != 6 {
+    let s = s.trim();
+    let h = if s.len() == 8 { &s[2..] } else { s };
+    if h.len() != 6 {
         return Color::BLACK;
     }
     Color::rgb(
-        u8::from_str_radix(&s[0..2], 16).unwrap_or(0),
-        u8::from_str_radix(&s[2..4], 16).unwrap_or(0),
-        u8::from_str_radix(&s[4..6], 16).unwrap_or(0),
+        u8::from_str_radix(&h[0..2], 16).unwrap_or(0),
+        u8::from_str_radix(&h[2..4], 16).unwrap_or(0),
+        u8::from_str_radix(&h[4..6], 16).unwrap_or(0),
     )
+}
+
+/// Theme colour scheme (dk1/lt1/dk2/lt2/accent1-6/hlink/folHlink) + the slide
+/// master's colour map (bg1/tx1/... -> scheme slot).
+#[derive(Clone, Default)]
+struct Theme {
+    colors: HashMap<String, Color>,
+    clrmap: HashMap<String, String>,
+}
+
+impl Theme {
+    /// Resolve an `a:schemeClr val="..."` to an RGB colour.
+    fn scheme(&self, val: &str) -> Color {
+        if val == "phClr" {
+            return Color::rgb(0x40, 0x40, 0x40);
+        }
+        let slot = self.clrmap.get(val).cloned().unwrap_or_else(|| val.to_string());
+        self.colors.get(&slot).copied().unwrap_or(Color::BLACK)
+    }
+}
+
+fn parse_theme(xml: &str) -> HashMap<String, Color> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut out = HashMap::new();
+    let mut in_scheme = false;
+    let mut slot: Option<String> = None;
+    const SLOTS: [&str; 12] =
+        ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                let raw = e.name();
+                let name = raw.as_ref().strip_prefix(b"a:").unwrap_or(raw.as_ref());
+                if name == b"clrScheme" {
+                    in_scheme = true;
+                } else if in_scheme {
+                    if let Ok(n) = std::str::from_utf8(name) {
+                        if SLOTS.contains(&n) {
+                            slot = Some(n.to_string());
+                        } else if name == b"srgbClr" {
+                            if let (Some(s), Some(v)) = (slot.take(), get_attr(&e, b"val")) {
+                                out.insert(s, parse_color(&v));
+                            }
+                        } else if name == b"sysClr" {
+                            if let (Some(s), Some(v)) = (slot.take(), get_attr(&e, b"lastClr")) {
+                                out.insert(s, parse_color(&v));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::End(e)) => {
+                if e.name().as_ref().strip_prefix(b"a:").unwrap_or(e.name().as_ref()) == b"clrScheme" {
+                    break;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+fn parse_clrmap(xml: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"p:clrMap" => {
+                for a in e.attributes().flatten() {
+                    if let (Ok(k), Ok(v)) = (std::str::from_utf8(a.key.as_ref()), std::str::from_utf8(a.value.as_ref())) {
+                        map.insert(k.to_string(), v.to_string());
+                    }
+                }
+                break;
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    map
+}
+
+fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
+    let (r, g, b) = (c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
+    let hue = |p: f32, q: f32, mut t: f32| -> f32 {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    let (r, g, b) = if s.abs() < 1e-6 {
+        (l, l, l)
+    } else {
+        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let p = 2.0 * l - q;
+        (hue(p, q, h + 1.0 / 3.0), hue(p, q, h), hue(p, q, h - 1.0 / 3.0))
+    };
+    Color::rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+}
+
+/// Apply a DrawingML colour modifier (`a:lumMod`/`lumOff`/`shade`/`tint`, val/100000).
+fn apply_mod(c: Color, kind: &[u8], val: f32) -> Color {
+    match kind {
+        b"lumMod" => {
+            let (h, s, l) = rgb_to_hsl(c);
+            hsl_to_rgb(h, s, (l * val).clamp(0.0, 1.0))
+        }
+        b"lumOff" => {
+            let (h, s, l) = rgb_to_hsl(c);
+            hsl_to_rgb(h, s, (l + val).clamp(0.0, 1.0))
+        }
+        b"shade" => Color::rgb(
+            (c.r as f32 * val) as u8,
+            (c.g as f32 * val) as u8,
+            (c.b as f32 * val) as u8,
+        ),
+        b"tint" => Color::rgb(
+            (c.r as f32 * val + 255.0 * (1.0 - val)) as u8,
+            (c.g as f32 * val + 255.0 * (1.0 - val)) as u8,
+            (c.b as f32 * val + 255.0 * (1.0 - val)) as u8,
+        ),
+        _ => c,
+    }
 }
 
 fn is_cjk(ch: char) -> bool {
     let c = ch as u32;
     (0x2E80..=0x9FFF).contains(&c) || (0xAC00..=0xD7A3).contains(&c) || (0xF900..=0xFAFF).contains(&c) || (0xFF00..=0xFFEF).contains(&c)
+}
+
+/// Inherited run defaults for a placeholder kind (title vs body), resolved from
+/// the master title/body styles overridden by the layout placeholder styles.
+#[derive(Clone, Copy, Default)]
+struct PhStyle {
+    size: Option<f32>,
+    bold: Option<bool>,
+    color: Option<Color>,
+}
+#[derive(Clone, Copy, Default)]
+struct PhStyles {
+    title: PhStyle,
+    body: PhStyle,
+}
+
+fn merge_into(base: &mut PhStyle, over: PhStyle) {
+    if over.size.is_some() {
+        base.size = over.size;
+    }
+    if over.bold.is_some() {
+        base.bold = over.bold;
+    }
+    if over.color.is_some() {
+        base.color = over.color;
+    }
+}
+
+/// Read the first `<a:defRPr>` (size in px, bold, colour) from a style fragment.
+fn extract_style(frag: &str, theme: &Theme) -> PhStyle {
+    let mut reader = Reader::from_str(frag);
+    let mut buf = Vec::new();
+    let mut st = PhStyle::default();
+    let mut in_def = false;
+    let mut done = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                let n = e.name();
+                let nm = n.as_ref();
+                if nm == b"a:defRPr" && !done {
+                    in_def = true;
+                    if let Some(sz) = get_attr(&e, b"sz").and_then(|v| v.parse::<f32>().ok()) {
+                        st.size = Some(sz / 75.0);
+                    }
+                    if let Some(b) = get_attr(&e, b"b") {
+                        st.bold = Some(b == "1");
+                    }
+                } else if in_def && st.color.is_none() && (nm == b"a:srgbClr" || nm == b"a:schemeClr") {
+                    st.color = if nm == b"a:schemeClr" {
+                        get_attr(&e, b"val").map(|v| theme.scheme(&v))
+                    } else {
+                        get_attr(&e, b"val").map(|v| parse_color(&v))
+                    };
+                }
+            }
+            Ok(Event::End(e)) => {
+                if e.name().as_ref() == b"a:defRPr" && in_def {
+                    in_def = false;
+                    done = true;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    st
+}
+
+fn slice_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let i = s.find(open)?;
+    let j = s[i..].find(close)? + i;
+    Some(&s[i..j + close.len()])
+}
+
+/// The layout shape block whose `p:ph` matches one of `types` (for style inheritance).
+fn layout_ph_block<'a>(xml: &'a str, types: &[&str]) -> Option<&'a str> {
+    for block in xml.split("<p:sp>").skip(1) {
+        if let Some(phi) = block.find("<p:ph") {
+            let end = block[phi..].find('>').map(|k| phi + k + 1).unwrap_or(block.len());
+            let ph = &block[phi..end];
+            if types.iter().any(|t| ph.contains(&format!("type=\"{t}\""))) {
+                return Some(block);
+            }
+        }
+    }
+    None
 }
 
 impl Deck {
@@ -183,19 +439,84 @@ impl Deck {
         let (w, h, rids) = parse_presentation(&pres);
         deck.width = w;
         deck.height = h;
-        let rels = read_entry(&mut zip, "ppt/_rels/presentation.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+        let pres_rels = read_entry(&mut zip, "ppt/_rels/presentation.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+
         for rid in rids {
-            if let Some(target) = rels.get(&rid).cloned() {
-                let path = resolve_rel("ppt", &target);
-                let (dir, file) = match path.rsplit_once('/') {
-                    Some((d, f)) => (d.to_string(), f.to_string()),
-                    None => (String::new(), path.clone()),
-                };
-                let Some(xml) = read_entry(&mut zip, &path) else { continue };
-                let rels_path = format!("{}/_rels/{}.rels", dir, file);
-                let slide_rels = read_entry(&mut zip, &rels_path).map(|s| rels_map(&s)).unwrap_or_default();
-                deck.slides.push(parse_slide(&xml, &slide_rels, &dir, &mut zip));
+            let Some(target) = pres_rels.get(&rid).cloned() else { continue };
+            let slide_path = resolve_rel("ppt", &target);
+            let Some(slide_xml) = read_entry(&mut zip, &slide_path) else { continue };
+            let (sdir, sfile) = split_path(&slide_path);
+            let slide_rels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", sdir, sfile)).unwrap_or_default();
+            let slide_rels = rels_map(&slide_rels_xml);
+
+            // Resolve the slide -> layout -> master -> theme chain.
+            let mut theme = Theme::default();
+            let (mut master_xml, mut master_dir) = (String::new(), String::new());
+            let mut master_rels = HashMap::new();
+            let (mut layout_xml, mut layout_dir) = (String::new(), String::new());
+            let mut layout_rels = HashMap::new();
+
+            if let Some(lt) = rel_target(&slide_rels_xml, "slideLayout") {
+                let lp = resolve_rel(&sdir, &lt);
+                let (ld, lf) = split_path(&lp);
+                layout_dir = ld.clone();
+                layout_xml = read_entry(&mut zip, &lp).unwrap_or_default();
+                let lrels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", ld, lf)).unwrap_or_default();
+                layout_rels = rels_map(&lrels_xml);
+                if let Some(mt) = rel_target(&lrels_xml, "slideMaster") {
+                    let mp = resolve_rel(&ld, &mt);
+                    let (md, mf) = split_path(&mp);
+                    master_dir = md.clone();
+                    master_xml = read_entry(&mut zip, &mp).unwrap_or_default();
+                    let mrels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", md, mf)).unwrap_or_default();
+                    master_rels = rels_map(&mrels_xml);
+                    theme.clrmap = parse_clrmap(&master_xml);
+                    if let Some(tt) = rel_target(&mrels_xml, "theme") {
+                        let tp = resolve_rel(&md, &tt);
+                        theme.colors = read_entry(&mut zip, &tp).map(|x| parse_theme(&x)).unwrap_or_default();
+                    }
+                }
             }
+
+            // Placeholder text-style cascade: master title/body styles, overridden
+            // by the layout's matching placeholder styles.
+            let mut styles = PhStyles::default();
+            if !master_xml.is_empty() {
+                if let Some(ts) = slice_between(&master_xml, "<p:titleStyle>", "</p:titleStyle>") {
+                    styles.title = extract_style(ts, &theme);
+                }
+                if let Some(bs) = slice_between(&master_xml, "<p:bodyStyle>", "</p:bodyStyle>") {
+                    styles.body = extract_style(bs, &theme);
+                }
+            }
+            if !layout_xml.is_empty() {
+                if let Some(b) = layout_ph_block(&layout_xml, &["ctrTitle", "title"]) {
+                    merge_into(&mut styles.title, extract_style(b, &theme));
+                }
+                if let Some(b) = layout_ph_block(&layout_xml, &["subTitle", "body"]) {
+                    merge_into(&mut styles.body, extract_style(b, &theme));
+                }
+            }
+
+            // Z-order: master decoration, then layout decoration, then slide content.
+            let def = PhStyles::default();
+            let mut shapes = Vec::new();
+            let mut bg = None;
+            if !master_xml.is_empty() {
+                let (ms, mbg) = parse_part_shapes(&master_xml, &master_rels, &master_dir, &mut zip, &theme, &def, true);
+                shapes.extend(ms);
+                bg = mbg;
+            }
+            if !layout_xml.is_empty() {
+                let (ls, lbg) = parse_part_shapes(&layout_xml, &layout_rels, &layout_dir, &mut zip, &theme, &def, true);
+                shapes.extend(ls);
+                bg = lbg.or(bg);
+            }
+            let (ss, sbg) = parse_part_shapes(&slide_xml, &slide_rels, &sdir, &mut zip, &theme, &styles, false);
+            shapes.extend(ss);
+            let bg = sbg.or(bg);
+
+            deck.slides.push(SlideData { shapes, bg });
         }
         deck
     }
@@ -213,7 +534,13 @@ impl Deck {
     /// Render slide `idx` at `scale` (= zoom × dpr) into a device-px display list.
     pub fn render_slide(&self, idx: usize, font: &FontData, scale: f32) -> DisplayList {
         let mut dl = DisplayList::new((self.width * scale).max(1.0), (self.height * scale).max(1.0));
-        let Some(shapes) = self.slides.get(idx) else { return dl };
+        let Some(sd) = self.slides.get(idx) else { return dl };
+        let shapes = &sd.shapes;
+
+        // Slide background (master/layout/slide bg, resolved).
+        if let Some(bg) = sd.bg {
+            dl.push(fill_rect(0.0, 0.0, self.width * scale, self.height * scale, bg));
+        }
 
         for sh in shapes {
             let tf = Transform { sx: scale, ky: 0.0, kx: 0.0, sy: scale, tx: sh.x * scale, ty: sh.y * scale };
@@ -363,14 +690,53 @@ fn rels_map(xml: &str) -> HashMap<String, String> {
     map
 }
 
-fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str, zip: &mut Zip) -> Vec<Shape> {
+fn split_path(p: &str) -> (String, String) {
+    match p.rsplit_once('/') {
+        Some((d, f)) => (d.to_string(), f.to_string()),
+        None => (String::new(), p.to_string()),
+    }
+}
+
+/// First relationship Target whose Type ends with `type_suffix`.
+fn rel_target(xml: &str, type_suffix: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"Relationship" => {
+                if get_attr(&e, b"Type").is_some_and(|t| t.ends_with(type_suffix)) {
+                    if let Some(t) = get_attr(&e, b"Target") {
+                        return Some(t);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_part_shapes(
+    xml: &str,
+    slide_rels: &HashMap<String, String>,
+    slide_dir: &str,
+    zip: &mut Zip,
+    theme: &Theme,
+    ph_styles: &PhStyles,
+    skip_ph: bool,
+) -> (Vec<Shape>, Option<Color>) {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut shapes = Vec::new();
+    let mut bg: Option<Color> = None;
 
     let mut cur: Option<Shape> = None;
+    let mut cur_ph = PhStyle::default();
     let mut in_sppr = false;
     let mut in_rpr = false;
+    let mut in_bg = false;
     let mut in_ln = false;
     let mut cur_para: Option<Para> = None;
     let mut cur_align = Align::Left;
@@ -384,9 +750,14 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
     let mut pt_buf: Vec<(f32, f32)> = Vec::new();
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        let event = reader.read_event_into(&mut buf);
+        // Empty (self-closing) elements have no End event, so scope flags like
+        // in_rpr/in_ln must NOT latch on them or they leak into later siblings.
+        let empty = matches!(&event, Ok(Event::Empty(_)));
+        match event {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
                 b"p:sp" | b"p:pic" => {
+                    cur_ph = PhStyle::default();
                     cur = Some(Shape {
                         x: 0.0,
                         y: 0.0,
@@ -399,9 +770,20 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                         custom: Vec::new(),
                         paras: Vec::new(),
                         image: None,
+                        is_ph: false,
                     })
                 }
-                b"p:spPr" => in_sppr = true,
+                b"p:ph" => {
+                    if let Some(s) = cur.as_mut() {
+                        s.is_ph = true;
+                    }
+                    cur_ph = match get_attr(&e, b"type").as_deref() {
+                        Some("ctrTitle") | Some("title") => ph_styles.title,
+                        _ => ph_styles.body,
+                    };
+                }
+                b"p:bg" => in_bg = !empty,
+                b"p:spPr" => in_sppr = !empty,
                 b"a:blip" => {
                     if let (Some(s), Some(rid)) = (cur.as_mut(), get_attr(&e, b"r:embed")) {
                         if let Some(target) = slide_rels.get(&rid) {
@@ -432,12 +814,18 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                         }
                     }
                 }
-                b"a:srgbClr" => {
-                    if let Some(col) = get_attr(&e, b"val").map(|v| parse_color(&v)) {
-                        if in_ln {
+                b"a:srgbClr" | b"a:schemeClr" => {
+                    let col = if e.name().as_ref() == b"a:schemeClr" {
+                        get_attr(&e, b"val").map(|v| theme.scheme(&v))
+                    } else {
+                        get_attr(&e, b"val").map(|v| parse_color(&v))
+                    };
+                    if let Some(col) = col {
+                        if in_bg {
+                            bg = Some(col);
+                        } else if in_ln {
                             if let Some(s) = cur.as_mut() {
-                                let o = s.outline.get_or_insert(Outline { color: Color::BLACK, width: 1.0 });
-                                o.color = col;
+                                s.outline.get_or_insert(Outline { color: Color::BLACK, width: 1.0 }).color = col;
                             }
                         } else if in_rpr {
                             if let Some(r) = cur_run.as_mut() {
@@ -447,6 +835,43 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                             if let Some(s) = cur.as_mut() {
                                 s.fill = Some(col);
                             }
+                        }
+                    }
+                }
+                b"a:lumMod" | b"a:lumOff" | b"a:shade" | b"a:tint" => {
+                    if let Some(val) = get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()).map(|v| v / 100000.0) {
+                        let kind = e.name().as_ref().strip_prefix(b"a:").unwrap_or(b"").to_vec();
+                        if in_bg {
+                            if let Some(c) = bg {
+                                bg = Some(apply_mod(c, &kind, val));
+                            }
+                        } else if in_ln {
+                            if let Some(o) = cur.as_mut().and_then(|s| s.outline.as_mut()) {
+                                o.color = apply_mod(o.color, &kind, val);
+                            }
+                        } else if in_rpr {
+                            if let Some(r) = cur_run.as_mut() {
+                                r.color = apply_mod(r.color, &kind, val);
+                            }
+                        } else if in_sppr {
+                            if let Some(s) = cur.as_mut() {
+                                if let Some(f) = s.fill {
+                                    s.fill = Some(apply_mod(f, &kind, val));
+                                }
+                            }
+                        }
+                    }
+                }
+                b"a:noFill" => {
+                    if in_ln {
+                        if let Some(s) = cur.as_mut() {
+                            s.outline = None;
+                        }
+                    } else if in_bg {
+                        bg = None;
+                    } else if in_sppr {
+                        if let Some(s) = cur.as_mut() {
+                            s.fill = None;
                         }
                     }
                 }
@@ -463,7 +888,7 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                     }
                 }
                 b"a:ln" => {
-                    in_ln = true;
+                    in_ln = !empty;
                     if let Some(s) = cur.as_mut() {
                         let width = get_attr(&e, b"w").and_then(|v| v.parse::<f32>().ok()).map(|emu| emu / EMU_PER_PX).unwrap_or(1.0);
                         s.outline = Some(Outline { color: Color::rgb(0x40, 0x40, 0x40), width: width.max(0.75) });
@@ -518,14 +943,23 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                         _ => Align::Left,
                     };
                 }
-                b"a:r" => cur_run = Some(Run { text: String::new(), size: 24.0, bold: false, color: Color::BLACK }),
+                b"a:r" => {
+                    cur_run = Some(Run {
+                        text: String::new(),
+                        size: cur_ph.size.unwrap_or(24.0),
+                        bold: cur_ph.bold.unwrap_or(false),
+                        color: cur_ph.color.unwrap_or(Color::BLACK),
+                    })
+                }
                 b"a:rPr" => {
-                    in_rpr = true;
+                    in_rpr = !empty;
                     if let Some(r) = cur_run.as_mut() {
                         if let Some(sz) = get_attr(&e, b"sz").and_then(|v| v.parse::<f32>().ok()) {
                             r.size = sz / 75.0; // hundredths-of-point -> px
                         }
-                        r.bold = get_attr(&e, b"b").as_deref() == Some("1");
+                        if let Some(b) = get_attr(&e, b"b") {
+                            r.bold = b == "1";
+                        }
                     }
                 }
                 b"a:t" => in_t = true,
@@ -540,6 +974,7 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"p:spPr" => in_sppr = false,
+                b"p:bg" => in_bg = false,
                 b"a:rPr" => in_rpr = false,
                 b"a:ln" => in_ln = false,
                 b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" => {
@@ -587,7 +1022,9 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
                 }
                 b"p:sp" | b"p:pic" => {
                     if let Some(s) = cur.take() {
-                        shapes.push(s);
+                        if !(skip_ph && s.is_ph) {
+                            shapes.push(s);
+                        }
                     }
                 }
                 _ => {}
@@ -597,7 +1034,7 @@ fn parse_slide(xml: &str, slide_rels: &HashMap<String, String>, slide_dir: &str,
         }
         buf.clear();
     }
-    shapes
+    (shapes, bg)
 }
 
 struct Item {

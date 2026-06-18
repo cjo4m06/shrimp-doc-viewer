@@ -12,6 +12,7 @@ packages/doc-viewer/wasm/
 
 # Local demo/test assets (fonts are lazy-loaded at runtime; large, never committed)
 examples/assets/fonts/
+examples/assets/realtest.pptx
 *.png
 !docs/**/*.png
 
