@@ -1,0 +1,12 @@
+[package]
+name = "dv-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal PNG/JPEG decoder (zune) producing straight RGBA8 for doc-viewer image rendering."
+
+[dependencies]
+# zune-png and zune-jpeg pin different zune-core majors (0.4 vs 0.5), so use each
+# crate's re-exported `zune_core` rather than a single shared dependency.
+zune-png = { version = "0.4", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false }

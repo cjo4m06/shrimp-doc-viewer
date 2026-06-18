@@ -11,6 +11,7 @@ members = [
     "crates/dv-ir",
     "crates/dv-text",
     "crates/dv-render",
+    "crates/dv-image",
     "crates/dv-xlsx",
     "crates/dv-docx",
     "crates/dv-pptx",
@@ -28,6 +29,7 @@ rust-version = "1.80"
 dv-ir = { path = "crates/dv-ir" }
 dv-text = { path = "crates/dv-text" }
 dv-render = { path = "crates/dv-render" }
+dv-image = { path = "crates/dv-image" }
 dv-xlsx = { path = "crates/dv-xlsx" }
 dv-docx = { path = "crates/dv-docx" }
 dv-pptx = { path = "crates/dv-pptx" }
