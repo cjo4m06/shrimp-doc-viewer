@@ -1,0 +1,15 @@
+[package]
+name = "dv-xlsx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Self-written XLSX grid renderer for doc-viewer: parses values (calamine) and lowers a sheet into the shared display-list IR."
+
+[dependencies]
+dv-ir.workspace = true
+dv-text.workspace = true
+calamine = "0.26"
+
+[dev-dependencies]
+# Native PNG smoke test (examples/xlsx_demo.rs) rasterizes the display list.
+dv-render = { path = "../dv-render", features = ["png"] }

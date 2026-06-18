@@ -134,8 +134,16 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
   `setZoom`/`zoomIn`/`zoomOut`/`fitWidth` + Ctrl/⌘-wheel re-render only the visible
   pages at the new resolution. Verified on a 24-page PDF: 24 placeholders, ~2
   canvases live, eviction on scroll, crisp re-render at 156%.
-- **M3** — XLSX viewer (most tractable Office format): number-format engine, style
-  cascade, merge/freeze geometry, grid painter over the shared text stack.
+- **M3 — XLSX viewer (self-written Rust over the shared geba).** The first format
+  rendered by our own code, not an embedded engine.
+  - **M3.1 ✅** — `dv-xlsx` crate: parse values with `calamine`, lower a sheet into
+    the display list (column-letter/row-number headers, grid lines, per-cell text
+    shaped + truncated, numbers right-aligned). `mount()` sniffs the OOXML zip and
+    routes xlsx → `render_xlsx` (WASM) → tiny-skia. Verified in-browser on a 繁中
+    workbook.
+  - **M3.2** — real column widths / row heights, merged cells, alignment, number
+    formats. **M3.3** — styles (fonts, fills, borders, colors). **M3.4** — multiple
+    sheets, frozen panes, viewport virtualization for large grids.
 - **M4** — DOCX viewer: own flow-layout engine (the bulk of the work), ~80–90% fidelity.
 - **M5** — PPTX viewer: DrawingML shapes/theme inheritance, ~80–90% fidelity.
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;

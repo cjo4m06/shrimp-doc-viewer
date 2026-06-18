@@ -63,6 +63,65 @@ pub fn render_text_demo(
     render(&dl, &registry).data
 }
 
+/// A rendered raster (straight RGBA) handed to JS for `ImageData`/canvas.
+#[wasm_bindgen]
+pub struct RenderedImage {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl RenderedImage {
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+    /// Move the RGBA bytes out to JS (`width*height*4`). Call once.
+    #[wasm_bindgen(js_name = takeData)]
+    pub fn take_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
+    }
+}
+
+/// Render one sheet of an XLSX workbook to RGBA via the shared geba.
+/// `max_rows`/`max_cols` cap the rendered range (0 = use defaults).
+#[wasm_bindgen]
+pub fn render_xlsx(
+    xlsx: Vec<u8>,
+    font_bytes: Vec<u8>,
+    sheet_index: usize,
+    max_rows: usize,
+    max_cols: usize,
+) -> RenderedImage {
+    let mut opts = dv_xlsx::Options::default();
+    if max_rows > 0 {
+        opts.max_rows = max_rows;
+    }
+    if max_cols > 0 {
+        opts.max_cols = max_cols;
+    }
+
+    let measure_font = FontData::new(font_bytes.clone());
+    let dl = dv_xlsx::render_sheet(&xlsx, sheet_index, &measure_font, &opts);
+
+    let mut registry = FontRegistry::new();
+    registry.insert(FontId(0), FontData::new(font_bytes));
+
+    let rgba = render(&dl, &registry);
+    RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+}
+
+/// Sheet names of an XLSX workbook, in order.
+#[wasm_bindgen]
+pub fn xlsx_sheet_names(xlsx: &[u8]) -> Vec<String> {
+    dv_xlsx::sheet_names(xlsx)
+}
+
 /// The semantic version of the WASM core, surfaced to JS for diagnostics.
 #[wasm_bindgen]
 pub fn version() -> String {

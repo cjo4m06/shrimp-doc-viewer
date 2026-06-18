@@ -30,9 +30,13 @@ export interface RenderDemoOptions {
 export function renderToCanvas(canvas: HTMLCanvasElement, options: RenderDemoOptions): Promise<void>;
 
 export type DocFormat = "pdf" | "ooxml" | "ole" | "unknown";
+export type OoxmlKind = "xlsx" | "docx" | "pptx" | "ooxml";
 
 /** Detect a document's format from its magic bytes. */
 export function sniffFormat(bytes: Uint8Array): DocFormat;
+
+/** Distinguish an OOXML zip (docx/xlsx/pptx) by its part names. */
+export function sniffOoxml(bytes: Uint8Array): OoxmlKind;
 
 export interface MountOptions {
   /** Initial zoom (1 = 100%). */
@@ -63,19 +67,31 @@ export interface MountOptions {
    */
   useWorker?: boolean;
   onProgress?: (rendered: number, total: number) => void;
+
+  // --- XLSX ---
+  /** Font URL for spreadsheet text (a CJK-capable font, e.g. Noto Sans TC). */
+  fontUrl?: string;
+  /** Sheet to render (0-based). */
+  sheetIndex?: number;
+  /** Cap the rendered grid range (0 = engine defaults). */
+  maxRows?: number;
+  maxCols?: number;
 }
 
+/** Returned by `mount()`. Members present depend on the document type. */
 export interface Viewer {
-  pageCount: number;
-  /** Current zoom factor (1 = 100%). */
-  readonly zoom: number;
-  /** Set zoom (clamped). Re-renders only the visible pages. */
-  setZoom(zoom: number): void;
-  zoomIn(): void;
-  zoomOut(): void;
-  /** Fit the widest page to the container width. */
-  fitWidth(): void;
   destroy(): void;
+  /** PDF: number of pages. */
+  pageCount?: number;
+  /** XLSX: worksheet names. */
+  sheetNames?: string[];
+  /** PDF: current zoom factor (1 = 100%). */
+  readonly zoom?: number;
+  setZoom?(zoom: number): void;
+  zoomIn?(): void;
+  zoomOut?(): void;
+  /** Fit the widest page to the container width. */
+  fitWidth?(): void;
 }
 
 /**

@@ -54,6 +54,18 @@ async function toBytes(source) {
   throw new TypeError("mount(): source must be a Uint8Array, ArrayBuffer, Blob, or URL.");
 }
 
+/**
+ * Distinguish an OOXML zip (docx/xlsx/pptx) by the part names stored in the zip.
+ * Zip filenames sit uncompressed in the local headers, so a raw byte scan works.
+ */
+export function sniffOoxml(bytes) {
+  const text = new TextDecoder("latin1").decode(bytes);
+  if (text.includes("xl/workbook.xml")) return "xlsx";
+  if (text.includes("word/document.xml")) return "docx";
+  if (text.includes("ppt/presentation.xml")) return "pptx";
+  return "ooxml";
+}
+
 /** Detect document format from magic bytes. */
 export function sniffFormat(bytes) {
   if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
@@ -87,9 +99,17 @@ export async function mount(target, source, options = {}) {
     const { renderPdfInto } = await import("./pdf.js");
     return renderPdfInto(target, bytes, options);
   }
+  if (format === "ooxml") {
+    const sub = sniffOoxml(bytes);
+    if (sub === "xlsx") {
+      const { renderXlsxInto } = await import("./xlsx.js");
+      return renderXlsxInto(target, bytes, options);
+    }
+    throw new Error(`doc-viewer.mount(): detected "${sub}" — only PDF and XLSX are wired so far (DOCX/PPTX land in M4+).`);
+  }
   throw new Error(
-    `doc-viewer.mount(): detected "${format}" — only PDF is wired so far (M2). ` +
-      `Office (XLSX/DOCX/PPTX) frontends land in M3+.`
+    `doc-viewer.mount(): detected "${format}" — supported so far: PDF, XLSX. ` +
+      `Legacy binary (.doc/.xls/.ppt) is out of scope.`
   );
 }
 
