@@ -2,9 +2,11 @@
 //!
 //! Values come from `calamine`; the visual layer — column widths, row heights,
 //! merged cells, cell styles (fills, fonts, borders, alignment) and number
-//! formats — is parsed from the OOXML in [`model`] and lowered, with the values,
-//! into the shared [`dv_ir::DisplayList`]. The first format rendered entirely by
-//! our own code over the Rust geba.
+//! formats — is parsed from the OOXML in [`model`]. A sheet is parsed once into
+//! an owned [`Sheet`] and rendered by *viewport*: only the cells intersecting a
+//! scroll window are lowered into the shared [`dv_ir::DisplayList`], with frozen
+//! column/row headers painted on top. This is what lets large grids scroll and
+//! zoom without rendering everything.
 
 mod model;
 
@@ -19,6 +21,7 @@ use model::{HAlign, Xf};
 
 #[derive(Clone, Copy)]
 pub struct Options {
+    /// Caps for the prefix-sum arrays (guards pathological dimensions).
     pub max_rows: usize,
     pub max_cols: usize,
     pub col_width: f32,
@@ -29,7 +32,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_rows: 500, max_cols: 64, col_width: 64.0, row_height: 20.0, header_w: 44.0, font_size: 13.0 }
+        Self { max_rows: 100_000, max_cols: 1024, col_width: 64.0, row_height: 20.0, header_w: 44.0, font_size: 13.0 }
     }
 }
 
@@ -54,6 +57,25 @@ const HEADER_FILL: Color = Color::rgb(0xF0, 0xF1, 0xF3);
 const HEADER_TEXT: Color = Color::rgb(0x44, 0x47, 0x4C);
 const CELL_TEXT: Color = Color::BLACK;
 
+/// A worksheet parsed into an owned model, ready for repeated viewport renders.
+pub struct Sheet {
+    pub name: String,
+    values: HashMap<(u32, u32), CellVal>,
+    cell_xf: HashMap<(u32, u32), u32>,
+    xfs: Vec<Xf>,
+    anchor_span: HashMap<(u32, u32), (u32, u32)>,
+    covered: HashSet<(u32, u32)>,
+    /// Column boundaries in data px (len n_cols+1, col_x[0] = 0).
+    col_x: Vec<f32>,
+    /// Row boundaries in data px (len n_rows+1, row_y[0] = 0).
+    row_y: Vec<f32>,
+    n_rows: u32,
+    n_cols: u32,
+    header_w: f32,
+    header_h: f32,
+    font_size: f32,
+}
+
 /// Sheet names in workbook order (empty if the bytes aren't a readable xlsx).
 pub fn sheet_names(bytes: &[u8]) -> Vec<String> {
     match Xlsx::new(Cursor::new(bytes.to_vec())) {
@@ -62,155 +84,232 @@ pub fn sheet_names(bytes: &[u8]) -> Vec<String> {
     }
 }
 
-/// Render one sheet into a display list. `font` is used to measure and (under
-/// [`FontId(0)`] in the caller's registry) to paint cell text.
-pub fn render_sheet(bytes: &[u8], sheet_index: usize, font: &FontData, opts: &Options) -> DisplayList {
-    let values = read_values(bytes, sheet_index);
-    let parsed = model::parse(bytes, sheet_index, opts.col_width, opts.row_height);
-    let geom = &parsed.geom;
-    let styles = &parsed.styles;
+impl Sheet {
+    /// Parse one sheet into an owned model.
+    pub fn parse(bytes: &[u8], sheet_index: usize, opts: &Options) -> Sheet {
+        let name = sheet_names(bytes).into_iter().nth(sheet_index).unwrap_or_default();
+        let values = read_values(bytes, sheet_index);
+        let parsed = model::parse(bytes, sheet_index, opts.col_width, opts.row_height);
+        let geom = &parsed.geom;
 
-    let mut ext_rows = geom.n_rows;
-    let mut ext_cols = geom.n_cols;
-    for &(r, c) in values.keys() {
-        ext_rows = ext_rows.max(r + 1);
-        ext_cols = ext_cols.max(c + 1);
-    }
-    let nrows = (ext_rows as usize).min(opts.max_rows).max(1);
-    let ncols = (ext_cols as usize).min(opts.max_cols).max(1);
-
-    let hw = opts.header_w;
-    let hh = opts.row_height;
-
-    let mut col_x = vec![hw];
-    for c in 0..ncols {
-        col_x.push(col_x[c] + geom.col_width(c as u32));
-    }
-    let mut row_y = vec![hh];
-    for r in 0..nrows {
-        row_y.push(row_y[r] + geom.row_height(r as u32));
-    }
-    let total_w = col_x[ncols];
-    let total_h = row_y[nrows];
-
-    let mut dl = DisplayList::new(total_w, total_h);
-
-    // Merge bookkeeping.
-    let mut covered: HashSet<(u32, u32)> = HashSet::new();
-    let mut anchor_span: HashMap<(u32, u32), (u32, u32)> = HashMap::new();
-    for &(r0, c0, mut r1, mut c1) in &geom.merges {
-        if r0 as usize >= nrows || c0 as usize >= ncols {
-            continue;
+        let mut ext_rows = geom.n_rows;
+        let mut ext_cols = geom.n_cols;
+        for &(r, c) in values.keys() {
+            ext_rows = ext_rows.max(r + 1);
+            ext_cols = ext_cols.max(c + 1);
         }
-        r1 = (r1 as usize).min(nrows - 1) as u32;
-        c1 = (c1 as usize).min(ncols - 1) as u32;
-        for r in r0..=r1 {
-            for c in c0..=c1 {
-                covered.insert((r, c));
+        let n_rows = (ext_rows as usize).min(opts.max_rows).max(1) as u32;
+        let n_cols = (ext_cols as usize).min(opts.max_cols).max(1) as u32;
+
+        let mut col_x = Vec::with_capacity(n_cols as usize + 1);
+        col_x.push(0.0);
+        for c in 0..n_cols {
+            col_x.push(col_x[c as usize] + geom.col_width(c));
+        }
+        let mut row_y = Vec::with_capacity(n_rows as usize + 1);
+        row_y.push(0.0);
+        for r in 0..n_rows {
+            row_y.push(row_y[r as usize] + geom.row_height(r));
+        }
+
+        let mut covered = HashSet::new();
+        let mut anchor_span = HashMap::new();
+        for &(r0, c0, r1, c1) in &geom.merges {
+            if r0 >= n_rows || c0 >= n_cols {
+                continue;
+            }
+            let r1 = r1.min(n_rows - 1);
+            let c1 = c1.min(n_cols - 1);
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    covered.insert((r, c));
+                }
+            }
+            covered.remove(&(r0, c0));
+            anchor_span.insert((r0, c0), (r1, c1));
+        }
+
+        Sheet {
+            name,
+            values,
+            cell_xf: parsed.geom.cell_xf,
+            xfs: parsed.styles.xfs,
+            anchor_span,
+            covered,
+            col_x,
+            row_y,
+            n_rows,
+            n_cols,
+            header_w: opts.header_w,
+            header_h: opts.row_height,
+            font_size: opts.font_size,
+        }
+    }
+
+    pub fn total_w(&self) -> f32 {
+        self.col_x[self.n_cols as usize]
+    }
+    pub fn total_h(&self) -> f32 {
+        self.row_y[self.n_rows as usize]
+    }
+    pub fn header_w(&self) -> f32 {
+        self.header_w
+    }
+    pub fn header_h(&self) -> f32 {
+        self.header_h
+    }
+
+    fn xf_of(&self, r: u32, c: u32) -> Option<&Xf> {
+        self.cell_xf.get(&(r, c)).and_then(|i| self.xfs.get(*i as usize))
+    }
+
+    /// Render the viewport at `(scroll_x, scroll_y)` (data px) into a
+    /// `dev_w`×`dev_h` device-pixel surface, scaled by `scale` (= zoom × dpr).
+    /// Column/row headers are frozen (painted last, over scrolled content).
+    pub fn render_viewport(&self, font: &FontData, scroll_x: f32, scroll_y: f32, dev_w: f32, dev_h: f32, scale: f32) -> DisplayList {
+        let mut dl = DisplayList::new(dev_w.max(1.0), dev_h.max(1.0));
+        let hw = self.header_w * scale;
+        let hh = self.header_h * scale;
+        let content_w = (dev_w / scale - self.header_w).max(0.0);
+        let content_h = (dev_h / scale - self.header_h).max(0.0);
+
+        let (c0, c1) = visible_range(&self.col_x, scroll_x, content_w, self.n_cols as usize);
+        let (r0, r1) = visible_range(&self.row_y, scroll_y, content_h, self.n_rows as usize);
+
+        let dx = |cx: f32| hw + (cx - scroll_x) * scale;
+        let dy = |cy: f32| hh + (cy - scroll_y) * scale;
+
+        // 1) Grid lines (data area).
+        for c in c0..=c1.min(self.n_cols as usize) {
+            dl.push(vline(dx(self.col_x[c]), hh, dev_h, GRID));
+        }
+        for r in r0..=r1.min(self.n_rows as usize) {
+            dl.push(hline(hw, dev_w, dy(self.row_y[r]), GRID));
+        }
+
+        // 2) Cell fills (cover grid lines where present).
+        for r in r0..r1 {
+            for c in c0..c1 {
+                let (r, c) = (r as u32, c as u32);
+                if self.covered.contains(&(r, c)) || self.anchor_span.contains_key(&(r, c)) {
+                    continue;
+                }
+                if let Some(fill) = self.xf_of(r, c).and_then(|x| x.fill) {
+                    let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                    dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, fill));
+                }
             }
         }
-        covered.remove(&(r0, c0));
-        anchor_span.insert((r0, c0), (r1, c1));
-    }
 
-    let xf_of = |r: u32, c: u32| -> Option<&Xf> {
-        geom.cell_xf.get(&(r, c)).and_then(|i| styles.xfs.get(*i as usize))
-    };
-    let rect_of = |r: u32, c: u32| -> (f32, f32, f32, f32) {
-        let (er, ec) = anchor_span.get(&(r, c)).copied().unwrap_or((r, c));
-        (col_x[c as usize], col_x[ec as usize + 1], row_y[r as usize], row_y[er as usize + 1])
-    };
-
-    // 1) Header bands.
-    dl.push(fill_rect(0.0, 0.0, total_w, hh, HEADER_FILL));
-    dl.push(fill_rect(0.0, 0.0, hw, total_h, HEADER_FILL));
-
-    // 2) Grid lines.
-    dl.push(vline(0.0, 0.0, total_h));
-    for c in 0..=ncols {
-        dl.push(vline(col_x[c], 0.0, total_h));
-    }
-    dl.push(hline(0.0, total_w, 0.0));
-    for r in 0..=nrows {
-        dl.push(hline(0.0, total_w, row_y[r]));
-    }
-
-    // 3) Merged regions: cover interior grid lines with the anchor fill (or white).
-    for (&(r0, c0), _) in anchor_span.iter() {
-        let (x0, x1, y0, y1) = rect_of(r0, c0);
-        let fill = xf_of(r0, c0).and_then(|xf| xf.fill).unwrap_or(Color::WHITE);
-        dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, fill));
-    }
-
-    // 4) Cell fills (non-merged styled cells).
-    for (&(r, c), _) in geom.cell_xf.iter() {
-        if covered.contains(&(r, c)) || anchor_span.contains_key(&(r, c)) || r as usize >= nrows || c as usize >= ncols {
-            continue;
-        }
-        if let Some(fill) = xf_of(r, c).and_then(|xf| xf.fill) {
-            let (x0, x1, y0, y1) = rect_of(r, c);
+        // 3) Merges that intersect the viewport: fill (anchor colour/white) + border + text.
+        for (&(ar, ac), &(er, ec)) in self.anchor_span.iter() {
+            if (ar as usize) >= r1 || (er as usize) < r0 || (ac as usize) >= c1 || (ec as usize) < c0 {
+                continue;
+            }
+            let (x0, x1, y0, y1) = (dx(self.col_x[ac as usize]), dx(self.col_x[ec as usize + 1]), dy(self.row_y[ar as usize]), dy(self.row_y[er as usize + 1]));
+            let fill = self.xf_of(ar, ac).and_then(|x| x.fill).unwrap_or(Color::WHITE);
             dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, fill));
+            dl.push(rect_stroke(x0, y0, x1 - x0, y1 - y0, MERGE_BORDER));
+            if let Some(v) = self.values.get(&(ar, ac)) {
+                self.push_cell_text(&mut dl, font, v, ar, ac, x0, x1, y0, y1, scale);
+            }
         }
-    }
 
-    // 5) Borders: explicit cell borders, then merge outlines on top.
-    for (&(r, c), _) in geom.cell_xf.iter() {
-        if covered.contains(&(r, c)) || r as usize >= nrows || c as usize >= ncols {
-            continue;
-        }
-        if let Some(xf) = xf_of(r, c) {
-            let b = xf.border;
-            if b.left || b.right || b.top || b.bottom {
-                let (x0, x1, y0, y1) = rect_of(r, c);
-                if b.top {
-                    dl.push(seg(x0, y0, x1, y0));
+        // 4) Explicit cell borders.
+        for r in r0..r1 {
+            for c in c0..c1 {
+                let (r, c) = (r as u32, c as u32);
+                if self.covered.contains(&(r, c)) {
+                    continue;
                 }
-                if b.bottom {
-                    dl.push(seg(x0, y1, x1, y1));
-                }
-                if b.left {
-                    dl.push(seg(x0, y0, x0, y1));
-                }
-                if b.right {
-                    dl.push(seg(x1, y0, x1, y1));
+                if let Some(b) = self.xf_of(r, c).map(|x| x.border) {
+                    if b.left || b.right || b.top || b.bottom {
+                        let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                        if b.top {
+                            dl.push(seg(x0, y0, x1, y0, BORDER));
+                        }
+                        if b.bottom {
+                            dl.push(seg(x0, y1, x1, y1, BORDER));
+                        }
+                        if b.left {
+                            dl.push(seg(x0, y0, x0, y1, BORDER));
+                        }
+                        if b.right {
+                            dl.push(seg(x1, y0, x1, y1, BORDER));
+                        }
+                    }
                 }
             }
         }
-    }
-    for (&(r0, c0), _) in anchor_span.iter() {
-        let (x0, x1, y0, y1) = rect_of(r0, c0);
-        dl.push(rect_stroke(x0, y0, x1 - x0, y1 - y0, MERGE_BORDER));
-    }
 
-    // 6) Header labels.
-    for c in 0..ncols {
-        push_text(&mut dl, font, &col_letter(c), opts.font_size, col_x[c], col_x[c + 1], 0.0, hh, Align::Center, HEADER_TEXT, false);
-    }
-    for r in 0..nrows {
-        push_text(&mut dl, font, &(r + 1).to_string(), opts.font_size, 0.0, hw, row_y[r], row_y[r + 1] - row_y[r], Align::Center, HEADER_TEXT, false);
-    }
-
-    // 7) Cell text.
-    for (&(r, c), val) in values.iter() {
-        if covered.contains(&(r, c)) || r as usize >= nrows || c as usize >= ncols {
-            continue;
+        // 5) Cell text (non-merged).
+        for r in r0..r1 {
+            for c in c0..c1 {
+                let (r, c) = (r as u32, c as u32);
+                if self.covered.contains(&(r, c)) || self.anchor_span.contains_key(&(r, c)) {
+                    continue;
+                }
+                if let Some(v) = self.values.get(&(r, c)) {
+                    let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                    self.push_cell_text(&mut dl, font, v, r, c, x0, x1, y0, y1, scale);
+                }
+            }
         }
-        let xf = xf_of(r, c);
-        let text = display_text(val, xf);
+
+        // 6) Frozen headers (painted last, over any scrolled-under content).
+        dl.push(fill_rect(0.0, 0.0, dev_w, hh, HEADER_FILL));
+        dl.push(fill_rect(0.0, 0.0, hw, dev_h, HEADER_FILL));
+        dl.push(vline(0.0, 0.0, dev_h, GRID));
+        dl.push(vline(hw, 0.0, dev_h, GRID));
+        dl.push(hline(0.0, dev_w, 0.0, GRID));
+        dl.push(hline(0.0, dev_w, hh, GRID));
+        let hsize = self.font_size * scale;
+        for c in c0..c1 {
+            let (x0, x1) = (dx(self.col_x[c]), dx(self.col_x[c + 1]));
+            dl.push(vline(x1, 0.0, hh, GRID));
+            push_text(&mut dl, font, &col_letter(c), hsize, x0, x1, 0.0, hh, Align::Center, HEADER_TEXT, false);
+        }
+        for r in r0..r1 {
+            let (y0, y1) = (dy(self.row_y[r]), dy(self.row_y[r + 1]));
+            dl.push(hline(0.0, hw, y1, GRID));
+            push_text(&mut dl, font, &(r + 1).to_string(), hsize, 0.0, hw, y0, y1 - y0, Align::Center, HEADER_TEXT, false);
+        }
+
+        dl
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_cell_text(&self, dl: &mut DisplayList, font: &FontData, v: &CellVal, r: u32, c: u32, x0: f32, x1: f32, y0: f32, y1: f32, scale: f32) {
+        let xf = self.xf_of(r, c);
+        let text = display_text(v, xf);
         if text.is_empty() {
-            continue;
+            return;
         }
-        let align = xf
-            .and_then(|x| x.h_align)
-            .map(map_align)
-            .unwrap_or_else(|| default_align(val));
+        let align = xf.and_then(|x| x.h_align).map(map_align).unwrap_or_else(|| default_align(v));
         let color = xf.and_then(|x| x.font.color).unwrap_or(CELL_TEXT);
         let bold = xf.map(|x| x.font.bold).unwrap_or(false);
-        let (x0, x1, y0, y1) = rect_of(r, c);
-        push_text(&mut dl, font, &text, opts.font_size, x0, x1, y0, y1 - y0, align, color, bold);
+        push_text(dl, font, &text, self.font_size * scale, x0, x1, y0, y1 - y0, align, color, bold);
     }
+}
 
-    dl
+/// Visible cell index range `[i0, i1)` for a prefix-sum boundary array.
+fn visible_range(prefix: &[f32], start: f32, span: f32, n: usize) -> (usize, usize) {
+    if n == 0 {
+        return (0, 0);
+    }
+    let end = start + span;
+    let i0 = prefix.partition_point(|&x| x <= start).saturating_sub(1).min(n - 1);
+    let i1 = prefix.partition_point(|&x| x < end).min(n);
+    (i0, i1.max(i0 + 1))
+}
+
+/// Convenience: render an entire sheet (no scrolling) at 1×. Used by the native
+/// demo and the non-virtualized `render_xlsx` path.
+pub fn render_sheet(bytes: &[u8], sheet_index: usize, font: &FontData, opts: &Options) -> DisplayList {
+    let sheet = Sheet::parse(bytes, sheet_index, opts);
+    let dev_w = (sheet.header_w + sheet.total_w()).ceil();
+    let dev_h = (sheet.header_h + sheet.total_h()).ceil();
+    sheet.render_viewport(font, 0.0, 0.0, dev_w, dev_h, 1.0)
 }
 
 fn map_align(h: HAlign) -> Align {
@@ -232,10 +331,7 @@ fn default_align(v: &CellVal) -> Align {
 fn display_text(v: &CellVal, xf: Option<&Xf>) -> String {
     match v {
         CellVal::Text(s) => s.clone(),
-        CellVal::Num(n) => {
-            let code = xf.map(|x| x.fmt_code.as_str()).unwrap_or("General");
-            format_value(*n, code)
-        }
+        CellVal::Num(n) => format_value(*n, xf.map(|x| x.fmt_code.as_str()).unwrap_or("General")),
         CellVal::Bool(b) => (if *b { "TRUE" } else { "FALSE" }).to_string(),
         CellVal::Err(e) => e.clone(),
     }
@@ -388,7 +484,7 @@ fn format_date(v: f64, pattern: &str) -> String {
                 i += 1;
             }
         } else if lc == 'h' || lc == 's' || ch == '\\' {
-            i += 1; // time tokens / escapes not handled
+            i += 1;
         } else {
             out.push(ch);
             i += 1;
@@ -398,12 +494,10 @@ fn format_date(v: f64, pattern: &str) -> String {
 }
 
 fn ymd_from_excel_serial(serial: i64) -> (i64, i64, i64) {
-    // Excel 1900 system: serial 0 == 1899-12-30; Unix epoch == serial 25569.
     civil_from_days(serial - 25569)
 }
 
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    // Howard Hinnant's algorithm; z = days since 1970-01-01.
     let z = z + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = z - era * 146097;
@@ -447,25 +541,19 @@ fn rect_stroke(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     Command::StrokePath { path: p, paint: Paint::Solid(color), width: 1.0, transform: Transform::IDENTITY }
 }
 
-fn seg(x0: f32, y0: f32, x1: f32, y1: f32) -> Command {
+fn seg(x0: f32, y0: f32, x1: f32, y1: f32, color: Color) -> Command {
     let mut p = PathData::new();
     p.move_to(x0, y0);
     p.line_to(x1, y1);
-    Command::StrokePath { path: p, paint: Paint::Solid(BORDER), width: 1.0, transform: Transform::IDENTITY }
+    Command::StrokePath { path: p, paint: Paint::Solid(color), width: 1.0, transform: Transform::IDENTITY }
 }
 
-fn vline(x: f32, y0: f32, y1: f32) -> Command {
-    let mut p = PathData::new();
-    p.move_to(x, y0);
-    p.line_to(x, y1);
-    Command::StrokePath { path: p, paint: Paint::Solid(GRID), width: 1.0, transform: Transform::IDENTITY }
+fn vline(x: f32, y0: f32, y1: f32, color: Color) -> Command {
+    seg(x, y0, x, y1, color)
 }
 
-fn hline(x0: f32, x1: f32, y: f32) -> Command {
-    let mut p = PathData::new();
-    p.move_to(x0, y);
-    p.line_to(x1, y);
-    Command::StrokePath { path: p, paint: Paint::Solid(GRID), width: 1.0, transform: Transform::IDENTITY }
+fn hline(x0: f32, x1: f32, y: f32, color: Color) -> Command {
+    seg(x0, y, x1, y, color)
 }
 
 #[allow(clippy::too_many_arguments)]

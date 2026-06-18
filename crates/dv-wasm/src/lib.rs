@@ -5,6 +5,8 @@
 //! blit onto a canvas. Format frontends (PDF via PDFium in M2, then Office)
 //! attach here behind the same module without changing the JS packaging.
 
+use std::collections::HashMap;
+
 use wasm_bindgen::prelude::*;
 
 use dv_ir::{Color, Command, DisplayList, FontId, GlyphRun, Paint, PositionedGlyph};
@@ -121,6 +123,56 @@ pub fn render_xlsx(
 #[wasm_bindgen]
 pub fn xlsx_sheet_names(xlsx: &[u8]) -> Vec<String> {
     dv_xlsx::sheet_names(xlsx)
+}
+
+/// A parsed XLSX workbook kept alive for virtualized, zoomable viewport renders.
+/// Sheets are parsed lazily and cached.
+#[wasm_bindgen]
+pub struct XlsxBook {
+    bytes: Vec<u8>,
+    font: Vec<u8>,
+    names: Vec<String>,
+    opts: dv_xlsx::Options,
+    cache: HashMap<usize, dv_xlsx::Sheet>,
+}
+
+#[wasm_bindgen]
+impl XlsxBook {
+    #[wasm_bindgen(constructor)]
+    pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> XlsxBook {
+        let names = dv_xlsx::sheet_names(&bytes);
+        XlsxBook { bytes, font, names, opts: dv_xlsx::Options::default(), cache: HashMap::new() }
+    }
+
+    #[wasm_bindgen(js_name = sheetNames)]
+    pub fn sheet_names(&self) -> Vec<String> {
+        self.names.clone()
+    }
+
+    fn sheet(&mut self, idx: usize) -> &dv_xlsx::Sheet {
+        let (bytes, opts) = (&self.bytes, &self.opts);
+        self.cache.entry(idx).or_insert_with(|| dv_xlsx::Sheet::parse(bytes, idx, opts))
+    }
+
+    /// `[total_w, total_h, header_w, header_h]` in base (zoom=1) px.
+    #[wasm_bindgen(js_name = sheetGeometry)]
+    pub fn sheet_geometry(&mut self, idx: usize) -> Vec<f32> {
+        let s = self.sheet(idx);
+        vec![s.total_w(), s.total_h(), s.header_w(), s.header_h()]
+    }
+
+    /// Render the viewport at data-px `(scroll_x, scroll_y)` into a
+    /// `dev_w`×`dev_h` surface scaled by `scale` (= zoom × dpr).
+    #[wasm_bindgen(js_name = renderViewport)]
+    pub fn render_viewport(&mut self, idx: usize, scroll_x: f32, scroll_y: f32, dev_w: f32, dev_h: f32, scale: f32) -> RenderedImage {
+        let font_bytes = self.font.clone();
+        let font = FontData::new(font_bytes.clone());
+        let dl = self.sheet(idx).render_viewport(&font, scroll_x, scroll_y, dev_w, dev_h, scale);
+        let mut registry = FontRegistry::new();
+        registry.insert(FontId(0), FontData::new(font_bytes));
+        let rgba = render(&dl, &registry);
+        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    }
 }
 
 /// Render a DOCX document to RGBA via the shared geba (one continuous page).

@@ -10,7 +10,7 @@
       #bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
       #status { font: 13px/1.5 ui-monospace, monospace; color: #555; }
       .err { color: #c0392b; white-space: pre-wrap; }
-      #sheet { margin-top: 1rem; background: #fff; display: inline-block; padding: 8px; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.12); }
+      #sheet { margin-top: 1rem; max-width: 1000px; }
     </style>
   </head>
   <body>
@@ -36,7 +36,7 @@
           const t0 = performance.now();
           const view = await mount(sheet, bytes, { fontUrl: FONT });
           const ms = Math.round(performance.now() - t0);
-          status.textContent = `✓ ${label} — sheets: ${JSON.stringify(view.sheetNames)} — ${view.width}×${view.height}px — ${ms}ms`;
+          status.textContent = `✓ ${label} — sheets: ${JSON.stringify(view.sheetNames)} — 虛擬化/分頁/縮放 — ${ms}ms`;
           document.body.dataset.dvStatus = "ok";
         } catch (e) {
           status.className = "err";

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Build a minimal but valid styled .xlsx for testing the renderer.
+"""Build a minimal but valid styled, multi-sheet .xlsx for testing the renderer.
 
-No dependencies. Contains 繁體中文, numbers, a merged title, varied column
-widths, and a styles.xml exercising fills, bold/coloured fonts, borders,
-alignment, and number formats (thousands + currency).
+No dependencies. Sheet 1 ("銷售表") is a small styled table (merged title, fills,
+bold, borders, number formats). Sheet 2 ("明細") has ~120 rows to exercise sheet
+tabs and viewport virtualization.
 
 Usage: python3 make_xlsx.py out.xlsx
 """
 import sys
 import zipfile
 
+# ---- Sheet 1: styled summary -------------------------------------------------
 TITLE = "2024 年水果銷售統計表"
-# (value) per cell, row-major. None = empty.
-ROWS = [
+S1_ROWS = [
     [TITLE, None, None, None],
     ["產品", "數量", "單價", "小計"],
     ["蘋果", 10, 35, 350],
@@ -21,52 +21,38 @@ ROWS = [
     ["葡萄", 88, 60, 5280],
     ["合計", 133, None, 6365],
 ]
-# Parallel style indices into cellXfs (None = no explicit style).
-STYLE = [
-    [1, None, None, None],   # title (merged)
-    [2, 2, 2, 2],            # header
-    [5, 3, 3, 4],            # data
+S1_STYLE = [
+    [1, None, None, None],
+    [2, 2, 2, 2],
     [5, 3, 3, 4],
     [5, 3, 3, 4],
     [5, 3, 3, 4],
-    [6, 6, None, 7],         # totals (bold)
+    [5, 3, 3, 4],
+    [6, 6, None, 7],
 ]
-MERGES = ["A1:D1"]
-COLS = [(1, 1, 18), (2, 2, 9), (3, 3, 9), (4, 4, 12)]
+S1_MERGES = ["A1:D1"]
+S1_COLS = [(1, 1, 18), (2, 2, 9), (3, 3, 9), (4, 4, 12)]
 
-CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
-</Types>"""
+# ---- Sheet 2: long detail (tabs + virtualization) ---------------------------
+FRUITS = ["蘋果", "香蕉", "橘子", "葡萄", "西瓜", "鳳梨", "芒果", "草莓"]
+S2_ROWS = [["編號", "品項", "數量", "單價", "小計"]]
+S2_STYLE = [[2, 2, 2, 2, 2]]
+for i in range(1, 121):
+    fruit = FRUITS[i % len(FRUITS)]
+    qty = (i * 3) % 90 + 1
+    price = (i * 7) % 80 + 10
+    S2_ROWS.append([i, f"{fruit} 批次 {i}", qty, price, qty * price])
+    S2_STYLE.append([3, 5, 3, 4, 4])
+S2_COLS = [(1, 1, 7), (2, 2, 20), (3, 3, 9), (4, 4, 9), (5, 5, 12)]
 
-RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>"""
-
-WORKBOOK = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets><sheet name="銷售表" sheetId="1" r:id="rId1"/></sheets>
-</workbook>"""
-
-WB_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
-<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>"""
+SHEETS = [
+    {"name": "銷售表", "rows": S1_ROWS, "style": S1_STYLE, "merges": S1_MERGES, "cols": S1_COLS},
+    {"name": "明細", "rows": S2_ROWS, "style": S2_STYLE, "merges": [], "cols": S2_COLS},
+]
 
 STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="2">
-<numFmt numFmtId="164" formatCode="#,##0"/>
-<numFmt numFmtId="165" formatCode="$#,##0"/>
-</numFmts>
+<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="$#,##0"/></numFmts>
 <fonts count="3">
 <font><sz val="11"/><name val="Calibri"/></font>
 <font><b/><sz val="13"/><color rgb="FFFFFFFF"/></font>
@@ -98,6 +84,56 @@ STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </styleSheet>"""
 
 
+def ct(n_sheets):
+    overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for i in range(n_sheets)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        f'{overrides}'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+        '</Types>'
+    )
+
+
+RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"""
+
+
+def workbook_xml(sheets):
+    items = "".join(f'<sheet name="{s["name"]}" sheetId="{i + 1}" r:id="rId{i + 1}"/>' for i, s in enumerate(sheets))
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheets>{items}</sheets></workbook>'
+    )
+
+
+def wb_rels(n_sheets):
+    sheet_rels = "".join(
+        f'<Relationship Id="rId{i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i + 1}.xml"/>'
+        for i in range(n_sheets)
+    )
+    sid = n_sheets + 1
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'{sheet_rels}'
+        f'<Relationship Id="rId{sid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>'
+        f'<Relationship Id="rId{sid + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+
+
 def col_letter(c):
     s = ""
     c += 1
@@ -107,9 +143,43 @@ def col_letter(c):
     return s
 
 
+def sheet_xml(sheet, sref):
+    rows, style, merges, cols = sheet["rows"], sheet["style"], sheet["merges"], sheet["cols"]
+    rows_xml = []
+    for ri, row in enumerate(rows, start=1):
+        cells = []
+        for ci, val in enumerate(row):
+            s = style[ri - 1][ci]
+            ref = f"{col_letter(ci)}{ri}"
+            if val is None or val == "":
+                if s is not None:
+                    cells.append(f'<c r="{ref}" s="{s}"/>')
+                continue
+            sattr = f' s="{s}"' if s is not None else ""
+            if isinstance(val, (int, float)):
+                cells.append(f'<c r="{ref}"{sattr}><v>{val}</v></c>')
+            else:
+                cells.append(f'<c r="{ref}"{sattr} t="s"><v>{sref(val)}</v></c>')
+        rows_xml.append(f'<row r="{ri}">{"".join(cells)}</row>')
+    cols_xml = "".join(f'<col min="{lo}" max="{hi}" width="{w}" customWidth="1"/>' for (lo, hi, w) in cols)
+    merges_xml = (
+        f'<mergeCells count="{len(merges)}">' + "".join(f'<mergeCell ref="{m}"/>' for m in merges) + "</mergeCells>"
+        if merges
+        else ""
+    )
+    last = f"{col_letter(len(rows[0]) - 1)}{len(rows)}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="A1:{last}"/>'
+        f'<cols>{cols_xml}</cols>'
+        f'<sheetData>{"".join(rows_xml)}</sheetData>'
+        f'{merges_xml}</worksheet>'
+    )
+
+
 def main(path):
-    strings = []
-    index = {}
+    strings, index = [], {}
 
     def sref(t):
         if t not in index:
@@ -117,23 +187,7 @@ def main(path):
             strings.append(t)
         return index[t]
 
-    rows_xml = []
-    for ri, row in enumerate(ROWS, start=1):
-        cells = []
-        for ci, val in enumerate(row):
-            s = STYLE[ri - 1][ci]
-            if val is None or val == "":
-                if s is not None:
-                    cells.append(f'<c r="{col_letter(ci)}{ri}" s="{s}"/>')
-                continue
-            ref = f"{col_letter(ci)}{ri}"
-            sattr = f' s="{s}"' if s is not None else ""
-            if isinstance(val, (int, float)):
-                cells.append(f'<c r="{ref}"{sattr}><v>{val}</v></c>')
-            else:
-                cells.append(f'<c r="{ref}"{sattr} t="s"><v>{sref(val)}</v></c>')
-        rows_xml.append(f'<row r="{ri}">{"".join(cells)}</row>')
-
+    sheet_parts = [sheet_xml(s, sref) for s in SHEETS]
     sst_items = "".join(f"<si><t>{s}</t></si>" for s in strings)
     sst = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -141,27 +195,16 @@ def main(path):
         f'count="{len(strings)}" uniqueCount="{len(strings)}">{sst_items}</sst>'
     )
 
-    cols_xml = "".join(f'<col min="{lo}" max="{hi}" width="{w}" customWidth="1"/>' for (lo, hi, w) in COLS)
-    merges_xml = "".join(f'<mergeCell ref="{m}"/>' for m in MERGES)
-    sheet = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<dimension ref="A1:{col_letter(len(ROWS[0]) - 1)}{len(ROWS)}"/>'
-        f'<cols>{cols_xml}</cols>'
-        f'<sheetData>{"".join(rows_xml)}</sheetData>'
-        f'<mergeCells count="{len(MERGES)}">{merges_xml}</mergeCells>'
-        '</worksheet>'
-    )
-
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", CT)
+        z.writestr("[Content_Types].xml", ct(len(SHEETS)))
         z.writestr("_rels/.rels", RELS)
-        z.writestr("xl/workbook.xml", WORKBOOK)
-        z.writestr("xl/_rels/workbook.xml.rels", WB_RELS)
+        z.writestr("xl/workbook.xml", workbook_xml(SHEETS))
+        z.writestr("xl/_rels/workbook.xml.rels", wb_rels(len(SHEETS)))
         z.writestr("xl/styles.xml", STYLES)
         z.writestr("xl/sharedStrings.xml", sst)
-        z.writestr("xl/worksheets/sheet1.xml", sheet)
-    print("wrote", path)
+        for i, part in enumerate(sheet_parts):
+            z.writestr(f"xl/worksheets/sheet{i + 1}.xml", part)
+    print("wrote", path, "with", len(SHEETS), "sheets")
 
 
 if __name__ == "__main__":
