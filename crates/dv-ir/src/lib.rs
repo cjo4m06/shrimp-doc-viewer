@@ -159,6 +159,17 @@ pub enum Command {
         transform: Transform,
     },
     Glyphs(GlyphRun),
+    /// Blit a raster image (straight/un-premultiplied RGBA, row-major,
+    /// `src_w*src_h*4` bytes) into the destination rect `(x, y, w, h)`.
+    Image {
+        rgba: Vec<u8>,
+        src_w: u32,
+        src_h: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
 }
 
 /// A page/scene to paint. Width/height are the device-independent canvas size (px).

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use dv_ir::{Command, DisplayList, FillRule, FontId, Paint, PathData, PathVerb, Transform};
 use dv_text::FontData;
 use tiny_skia::{
-    Color as SkColor, FillRule as SkFillRule, LineCap, LineJoin, Paint as SkPaint, PathBuilder,
-    Pixmap, Stroke, Transform as SkTransform,
+    Color as SkColor, ColorU8, FilterQuality, FillRule as SkFillRule, LineCap, LineJoin,
+    Paint as SkPaint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform as SkTransform,
 };
 
 /// Maps [`FontId`]s used in a display list to actual font bytes. Frontends fill
@@ -133,6 +133,23 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                         pixmap.stroke_path(p, &sp, stroke, t, None);
                     }
                 }
+            }
+            Command::Image { rgba, src_w, src_h, x, y, w, h } => {
+                if *src_w == 0 || *src_h == 0 || rgba.len() < (src_w * src_h * 4) as usize {
+                    continue;
+                }
+                let Some(mut src) = Pixmap::new(*src_w, *src_h) else { continue };
+                {
+                    // tiny-skia stores premultiplied RGBA; convert from straight.
+                    let dst = src.pixels_mut();
+                    for (i, px) in dst.iter_mut().enumerate() {
+                        let o = i * 4;
+                        *px = ColorU8::from_rgba(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]).premultiply();
+                    }
+                }
+                let t = SkTransform::from_row(*w / *src_w as f32, 0.0, 0.0, *h / *src_h as f32, *x, *y);
+                let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
+                pixmap.draw_pixmap(0, 0, src.as_ref(), &paint, t, None);
             }
         }
     }
