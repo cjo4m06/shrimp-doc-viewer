@@ -169,6 +169,8 @@ pub enum Command {
         y: f32,
         w: f32,
         h: f32,
+        /// Optional clip path in device coords (e.g. an ellipse crop). `None` = rect.
+        clip: Option<PathData>,
     },
 }
 

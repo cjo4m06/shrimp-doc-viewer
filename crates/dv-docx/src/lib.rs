@@ -735,6 +735,7 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
             y: y_top,
             w: im.w * scale,
             h: im.h * scale,
+            clip: None,
         });
         return;
     }

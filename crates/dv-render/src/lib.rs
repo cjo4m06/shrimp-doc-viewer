@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use dv_ir::{Command, DisplayList, FillRule, FontId, Paint, PathData, PathVerb, Transform};
 use dv_text::FontData;
 use tiny_skia::{
-    Color as SkColor, ColorU8, FilterQuality, FillRule as SkFillRule, LineCap, LineJoin,
+    Color as SkColor, ColorU8, FilterQuality, FillRule as SkFillRule, LineCap, LineJoin, Mask,
     Paint as SkPaint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform as SkTransform,
 };
 
@@ -134,7 +134,7 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                     }
                 }
             }
-            Command::Image { rgba, src_w, src_h, x, y, w, h } => {
+            Command::Image { rgba, src_w, src_h, x, y, w, h, clip } => {
                 if *src_w == 0 || *src_h == 0 || rgba.len() < (src_w * src_h * 4) as usize {
                     continue;
                 }
@@ -149,7 +149,13 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                 }
                 let t = SkTransform::from_row(*w / *src_w as f32, 0.0, 0.0, *h / *src_h as f32, *x, *y);
                 let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
-                pixmap.draw_pixmap(0, 0, src.as_ref(), &paint, t, None);
+                // Optional clip (device-space path -> coverage mask), e.g. ellipse crop.
+                let mask = clip.as_ref().and_then(build_path).and_then(|p| {
+                    let mut m = Mask::new(pixmap.width(), pixmap.height())?;
+                    m.fill_path(&p, SkFillRule::Winding, true, SkTransform::identity());
+                    Some(m)
+                });
+                pixmap.draw_pixmap(0, 0, src.as_ref(), &paint, t, mask.as_ref());
             }
         }
     }
