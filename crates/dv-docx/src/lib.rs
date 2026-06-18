@@ -258,10 +258,12 @@ struct Float {
     off_x: f32, // px from left margin
     off_y: f32, // px from the anchor paragraph's top
     shapes: Vec<DShape>,
+    image_rid: Option<String>,
     image: Option<dv_image::DecodedImage>,
     img_w: f32,
     img_h: f32,
-    body_y: f32, // anchor paragraph top in body coords (assigned at layout time)
+    body_y: f32,  // anchor paragraph top in body coords (assigned at layout time)
+    behind: bool, // behindDoc / wrapNone -> doesn't reserve body space
 }
 
 struct Document {
@@ -641,9 +643,15 @@ fn parse_document(xml: &str) -> Document {
                 match name.as_ref() {
                     // ---- floating anchored drawings (text boxes / autoshapes) ----
                     b"wp:anchor" => {
-                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0 });
+                        let behind = get_attr(&e, b"behindDoc").as_deref() == Some("1");
+                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image_rid: None, image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0, behind });
                         gstack = vec![base_tf];
                         in_grpspr = false;
+                    }
+                    b"wp:wrapNone" => {
+                        if let Some(f) = cur_float.as_mut() {
+                            f.behind = true; // floats over text without reserving space
+                        }
                     }
                     b"wp:positionH" => pos_target = 10, // armed for H (set to 1 on posOffset)
                     b"wp:positionV" => pos_target = 20,
@@ -716,8 +724,11 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"a:blip" if cur_float.is_some() => {
-                        // anchored images inside floats not resolved yet (consume so it
-                        // doesn't become the paragraph's inline image)
+                        if let Some(f) = cur_float.as_mut() {
+                            if let Some(rid) = get_attr(&e, b"r:embed") {
+                                f.image_rid = Some(rid);
+                            }
+                        }
                     }
                     b"wp:extent" if cur_float.is_some() => {
                         if let Some(f) = cur_float.as_mut() {
@@ -1571,9 +1582,11 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
     let mut floats: Vec<Float> = Vec::new();
     let mut top = 0.0f32;
     let mut pending_break = false; // a preceding w:br page / page_break_after
+    let mut pending_reserve = 0.0f32; // vertical space a float reserves after its anchor para
     let (page_w, margin_l, margin_r) = (doc.page_w, doc.margin_l, doc.margin_r);
 
     for block in &mut doc.blocks {
+        top += std::mem::take(&mut pending_reserve);
         let para = match block {
             Block::Para(p) => p,
             Block::Table(t) => {
@@ -1598,6 +1611,18 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                     sh.glyphs = g;
                     sh.text_h = h;
                 }
+            }
+            // Reserve vertical space (wrapTopAndBottom) so body text below the anchor
+            // paragraph flows past the float instead of overlapping it.
+            if !fl.behind {
+                let fh = if fl.shapes.is_empty() {
+                    fl.img_h
+                } else {
+                    let bot = fl.shapes.iter().map(|s| s.y + s.h).fold(f32::MIN, f32::max);
+                    let topy = fl.shapes.iter().map(|s| s.y).fold(f32::MAX, f32::min);
+                    (bot - topy).max(0.0)
+                };
+                pending_reserve = pending_reserve.max(fl.off_y + fh + 8.0);
             }
             floats.push(fl);
         }
@@ -1899,6 +1924,7 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
 /// A laid-out header or footer part.
 struct HdrFtr {
     lines: Vec<Line>,
+    floats: Vec<Float>,
     height: f32,
 }
 
@@ -1924,9 +1950,11 @@ fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, n
     resolve_numbering(&mut doc, nb);
     let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
     resolve_images(&mut doc, bytes, &rels);
-    let (lines, _floats) = layout_lines(&mut doc, font);
-    let height = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
-    Some(HdrFtr { lines, height })
+    let (lines, floats) = layout_lines(&mut doc, font);
+    let line_h = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
+    let float_h = floats.iter().map(|f| f.off_y + f.img_h).fold(0.0, f32::max);
+    let height = line_h.max(float_h);
+    Some(HdrFtr { lines, floats, height })
 }
 
 /// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
@@ -2264,6 +2292,9 @@ impl DocxDoc {
         let first = idx == 0 && self.title_pg;
         let hdr = if first { self.hdr_first.as_ref().or(self.hdr_default.as_ref()) } else { self.hdr_default.as_ref() };
         if let Some(h) = hdr {
+            for fl in &h.floats {
+                render_float(&mut dl, fl, self.margin_l, self.header_dist, scale);
+            }
             for line in &h.lines {
                 emit_line(&mut dl, line, (self.header_dist + line.top + line.ascent) * scale, scale);
             }
@@ -2271,6 +2302,9 @@ impl DocxDoc {
         let ftr = if first { self.ftr_first.as_ref().or(self.ftr_default.as_ref()) } else { self.ftr_default.as_ref() };
         if let Some(f) = ftr {
             let foot_top = (self.page_h - self.footer_dist - f.height).max(self.page_h * 0.85);
+            for fl in &f.floats {
+                render_float(&mut dl, fl, self.margin_l, foot_top, scale);
+            }
             for line in &f.lines {
                 emit_line(&mut dl, line, (foot_top + line.top + line.ascent) * scale, scale);
             }
@@ -2356,20 +2390,38 @@ fn resolve_images(doc: &mut Document, bytes: &[u8], rels_name: &str) {
         Some(s) => rels_map(&s),
         None => return,
     };
+    let decode = |rid: &str| -> Option<dv_image::DecodedImage> {
+        let target = rels.get(rid)?;
+        let path = resolve_rel("word", target);
+        read_zip_bytes(bytes, &path).and_then(|b| dv_image::decode(&b))
+    };
     let mut paras = Vec::new();
     collect_paras_mut(&mut doc.blocks, &mut paras);
     for para in paras {
-        let Some(rid) = para.image_rid.clone() else { continue };
-        let Some(target) = rels.get(&rid) else { continue };
-        let path = resolve_rel("word", target);
-        if let Some(img) = read_zip_bytes(bytes, &path).and_then(|b| dv_image::decode(&b)) {
-            if para.image_w <= 0.0 {
-                para.image_w = img.width as f32;
+        if let Some(rid) = para.image_rid.clone() {
+            if let Some(img) = decode(&rid) {
+                if para.image_w <= 0.0 {
+                    para.image_w = img.width as f32;
+                }
+                if para.image_h <= 0.0 {
+                    para.image_h = img.height as f32;
+                }
+                para.image = Some(img);
             }
-            if para.image_h <= 0.0 {
-                para.image_h = img.height as f32;
+        }
+        // anchored images inside floats (e.g. a header/footer logo)
+        for fl in &mut para.floats {
+            if let Some(rid) = fl.image_rid.clone() {
+                if let Some(img) = decode(&rid) {
+                    if fl.img_w <= 0.0 {
+                        fl.img_w = img.width as f32;
+                    }
+                    if fl.img_h <= 0.0 {
+                        fl.img_h = img.height as f32;
+                    }
+                    fl.image = Some(img);
+                }
             }
-            para.image = Some(img);
         }
     }
 }
