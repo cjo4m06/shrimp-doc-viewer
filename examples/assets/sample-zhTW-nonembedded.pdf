@@ -1,0 +1,50 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 8 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 282 >>
+stream
+BT
+/F2 14 Tf 1 0 0 1 72 790 Tm (Non-embedded CID font: MingLiU / Adobe-CNS1 / UniCNS-UCS2-H) Tj
+/F2 12 Tf 1 0 0 1 72 766 Tm (Latin via base-14 Helvetica should always render.) Tj
+/F1 32 Tf 1 0 0 1 72 700 Tm <7E419AD44E2D6587> Tj
+/F1 32 Tf 1 0 0 1 72 655 Tm <5B57578B6E2C8A66> Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /MingLiU /Encoding /UniCNS-UCS2-H /DescendantFonts [6 0 R] >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /MingLiU /CIDSystemInfo << /Registry (Adobe) /Ordering (CNS1) /Supplement 0 >> /FontDescriptor 7 0 R /DW 1000 >>
+endobj
+7 0 obj
+<< /Type /FontDescriptor /FontName /MingLiU /Flags 4 /FontBBox [0 -120 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 80 >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000257 00000 n 
+0000000589 00000 n 
+0000000707 00000 n 
+0000000883 00000 n 
+0000001048 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1118
+%%EOF

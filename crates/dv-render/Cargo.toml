@@ -1,0 +1,22 @@
+[package]
+name = "dv-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "tiny-skia CPU raster backend for doc-viewer: paints a dv-ir DisplayList to RGBA."
+
+[dependencies]
+dv-ir.workspace = true
+dv-text.workspace = true
+# Default features drop tiny-skia's `png-format` (a PNG *file* encoder we never
+# use in the browser — we output raw RGBA to canvas). It does NOT affect image
+# rendering fidelity. The native demo re-enables it via the `png` feature below.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+
+[features]
+# Enables PNG file output (Pixmap::save_png) for the native demo only.
+png = ["tiny-skia/png-format"]
+
+[[example]]
+name = "demo"
+required-features = ["png"]

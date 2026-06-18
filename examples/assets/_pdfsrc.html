@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @page { size: A4; margin: 18mm; }
+      body { font-family: "PingFang TC", "Heiti TC", system-ui, sans-serif; color: #1a1a1a; line-height: 1.7; }
+      h1 { color: #1f6feb; font-size: 24pt; }
+      h2 { font-size: 15pt; margin-top: 1.4em; }
+      table { border-collapse: collapse; width: 100%; margin-top: .6em; }
+      th, td { border: 1px solid #bbb; padding: 6px 10px; font-size: 11pt; }
+      th { background: #f0f4ff; }
+      .en { color: #555; }
+    </style>
+  </head>
+  <body>
+    <h1>doc-viewer — PDFium 繁體中文渲染測試</h1>
+    <p>這是一份由 headless Chrome 列印產生、<strong>字型已內嵌</strong>的 PDF,用來驗證 PDFium-WASM 在
+       <code>doc-viewer.mount()</code> 之下能否高還原度地渲染繁體中文與向量排版。</p>
+
+    <h2>段落與標點</h2>
+    <p>春眠不覺曉,處處聞啼鳥。夜來風雨聲,花落知多少。<span class="en">(The Spring Dawn — a classic.)</span>
+       測試全形標點:「引號」、《書名號》、破折號——以及刪節號……還有數字 1234567890。</p>
+
+    <h2>表格</h2>
+    <table>
+      <thead><tr><th>格式</th><th>策略</th><th>還原度</th></tr></thead>
+      <tbody>
+        <tr><td>PDF</td><td>內嵌 PDFium-WASM</td><td>高</td></tr>
+        <tr><td>Excel / Word / PPT</td><td>自寫 Rust 渲染器</td><td>80–90%</td></tr>
+        <tr><td>舊版二進位</td><td>延後或伺服器轉檔</td><td>—</td></tr>
+      </tbody>
+    </table>
+
+    <h2>多語言混排</h2>
+    <p>繁體中文 · 日本語のテキスト · 한국어 텍스트 · English text · Ελληνικά · 0123456789</p>
+  </body>
+</html>

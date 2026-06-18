@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>doc-viewer — M1 geba demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+      h1 { font-size: 1.25rem; }
+      canvas { border: 1px solid #ddd; border-radius: 6px; display: block; margin-top: 1rem; }
+      #status { font: 13px/1.5 ui-monospace, monospace; color: #555; white-space: pre-wrap; }
+      .err { color: #c0392b; }
+    </style>
+  </head>
+  <body>
+    <h1>doc-viewer — M1 共用地基 demo (Rust/WASM)</h1>
+    <p id="status">loading…</p>
+    <canvas id="c" width="900" height="220"></canvas>
+
+    <script type="module">
+      import { init, renderToCanvas } from "/packages/doc-viewer/src/index.js";
+
+      const status = document.getElementById("status");
+      const canvas = document.getElementById("c");
+
+      try {
+        const { version } = await init();
+        status.textContent = `WASM core v${version} loaded. Rendering 繁體中文 through the geba…`;
+
+        await renderToCanvas(canvas, {
+          // Local Noto Sans TC subset containing exactly the demo glyphs.
+          fontUrl: "/examples/assets/fonts/NotoSansTC-subset.ttf",
+          text: "Hello,你好，繁體中文0123",
+          size: 64,
+          x: 28,
+          baseline: 140,
+        });
+
+        status.textContent = `WASM core v${version} — rendered ✓ (shape → outline → tiny-skia raster, in-browser)`;
+        document.body.dataset.dvStatus = "ok";
+      } catch (e) {
+        status.className = "err";
+        status.textContent = "ERROR: " + (e && e.stack ? e.stack : e);
+        document.body.dataset.dvStatus = "error";
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @page { size: A4; margin: 18mm; }
+      body { font-family: "PingFang TC", "Heiti TC", system-ui, sans-serif; color: #1a1a1a; line-height: 1.8; }
+      .page { page-break-after: always; }
+      h1 { color: #1f6feb; font-size: 22pt; }
+      p { font-size: 12pt; }
+      .big { font-size: 40pt; color: #c0392b; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const root = document.getElementById("root");
+      const N = 24;
+      for (let i = 1; i <= N; i++) {
+        const d = document.createElement("div");
+        d.className = "page";
+        d.innerHTML =
+          `<h1>第 ${i} 頁 / 共 ${N} 頁 — 虛擬化與縮放測試</h1>` +
+          `<p class="big">繁體中文 ${i}</p>` +
+          `<p>春眠不覺曉,處處聞啼鳥。夜來風雨聲,花落知多少。Page ${i}. ` +
+          `這是用來測試「只渲染可見頁、捲離釋放、縮放只重畫可見頁」的多頁文件。</p>` +
+          `<p>全形標點:「引號」、《書名號》、破折號——刪節號……數字 ${String(i).padStart(3, "0")}。</p>`;
+        root.appendChild(d);
+      }
+    </script>
+  </body>
+</html>

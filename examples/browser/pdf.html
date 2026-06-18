@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>doc-viewer — PDF (PDFium) demo</title>
+    <!-- No bundler here, so map the bare specifier the package imports.
+         An npm consumer's bundler resolves this automatically. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@embedpdf/pdfium": "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/index.browser.js"
+        }
+      }
+    </script>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 1.5rem; color: #222; background: #f6f7f9; }
+      h1 { font-size: 1.2rem; }
+      #bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+      #status { font: 13px/1.5 ui-monospace, monospace; color: #555; }
+      .err { color: #c0392b; white-space: pre-wrap; }
+      #pages { margin-top: 1rem; }
+      label { font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <h1>doc-viewer — PDF 渲染 (PDFium-WASM 經 mount())</h1>
+    <div id="bar">
+      <button id="embedded">內嵌字型範例</button>
+      <button id="nonembedded">非內嵌字型範例 (MingLiU/Adobe-CNS1)</button>
+      <button id="multipage">多頁範例 (虛擬化)</button>
+      <input id="file" type="file" accept="application/pdf" />
+      <label><input id="fallback" type="checkbox" checked /> CJK fallback (Noto Sans TC)</label>
+      <label><input id="worker" type="checkbox" checked /> Web Worker 渲染</label>
+      <span style="margin-left:.5rem">縮放</span>
+      <button id="zoomOut" title="縮小 (Ctrl+滾輪)">−</button>
+      <span id="zoomPct" style="font:13px ui-monospace,monospace;min-width:3.5em;text-align:center">100%</span>
+      <button id="zoomIn" title="放大 (Ctrl+滾輪)">＋</button>
+      <button id="fitWidth">符合寬度</button>
+      <span id="status">ready. (切換 fallback 後請重新整理頁面再載入,引擎為單例)</span>
+    </div>
+    <div id="pages"></div>
+
+    <script type="module">
+      import { mount } from "/packages/doc-viewer/src/index.js";
+
+      const status = document.getElementById("status");
+      const pages = document.getElementById("pages");
+      const fallbackCb = document.getElementById("fallback");
+      const workerCb = document.getElementById("worker");
+      const PDFIUM_WASM = "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/pdfium.wasm";
+      const CJK_FONT = "/examples/assets/fonts/NotoSansTC-VF.ttf";
+      // The Worker can't use the page's import map, so it needs the module URL.
+      const EMBEDPDF_URL = "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/index.browser.js";
+
+      let viewer = null;
+      const zoomPct = document.getElementById("zoomPct");
+      const showZoom = (z) => (zoomPct.textContent = Math.round(z * 100) + "%");
+
+      document.getElementById("zoomIn").addEventListener("click", () => viewer?.zoomIn());
+      document.getElementById("zoomOut").addEventListener("click", () => viewer?.zoomOut());
+      document.getElementById("fitWidth").addEventListener("click", () => viewer?.fitWidth());
+
+      async function render(url, label) {
+        try {
+          status.className = "";
+          status.textContent = `loading ${label}…`;
+          viewer?.destroy?.();
+          let loadedMsg = "";
+          const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+          const opts = {
+            pdfiumWasmUrl: PDFIUM_WASM,
+            embedpdfUrl: EMBEDPDF_URL,
+            useWorker: workerCb.checked,
+            onZoom: showZoom,
+            onProgress: (n) => (status.textContent = loadedMsg ? `${loadedMsg} · 已渲染 ${n} 頁` : `渲染中… (${n})`),
+          };
+          if (fallbackCb.checked) opts.cjkFallbackFontUrl = CJK_FONT;
+          const t0 = performance.now();
+          viewer = await mount(pages, bytes, opts);
+          showZoom(viewer.zoom);
+          const ms = Math.round(performance.now() - t0);
+          loadedMsg = `✓ ${label} — ${viewer.pageCount} page(s), CJK fallback=${fallbackCb.checked}, worker=${workerCb.checked} — ${ms}ms`;
+          status.textContent = loadedMsg;
+          document.body.dataset.dvStatus = "ok";
+        } catch (e) {
+          status.className = "err";
+          status.textContent = "ERROR: " + (e && e.stack ? e.stack : e);
+          document.body.dataset.dvStatus = "error";
+        }
+      }
+
+      document.getElementById("embedded").addEventListener("click", () =>
+        render("/examples/assets/sample-zhTW.pdf", "sample-zhTW.pdf (embedded)")
+      );
+      document.getElementById("nonembedded").addEventListener("click", () =>
+        render("/examples/assets/sample-zhTW-nonembedded.pdf", "sample-zhTW-nonembedded.pdf")
+      );
+      document.getElementById("multipage").addEventListener("click", () =>
+        render("/examples/assets/sample-multipage.pdf", "sample-multipage.pdf")
+      );
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const url = URL.createObjectURL(f);
+        render(url, f.name);
+      });
+    </script>
+  </body>
+</html>

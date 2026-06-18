@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+pkg/
+
+# Generated WASM artifacts (rebuild with ./scripts/build-wasm.sh)
+packages/doc-viewer/wasm/
+
+# Local demo/test assets (fonts are lazy-loaded at runtime; large, never committed)
+examples/assets/fonts/
+*.png
+!docs/**/*.png
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

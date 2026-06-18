@@ -1,0 +1,35 @@
+{
+  "name": "doc-viewer",
+  "version": "0.0.0",
+  "description": "Browser, viewer-only, high-fidelity multi-format document viewer (PDF/Word/Excel/PPT). Rust/WASM core, pure-JS API.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "wasm"
+  ],
+  "sideEffects": [
+    "./wasm/dv_wasm.js"
+  ],
+  "keywords": [
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "viewer",
+    "wasm",
+    "document"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "@embedpdf/pdfium": "^2.14.4"
+  }
+}

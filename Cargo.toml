@@ -1,0 +1,41 @@
+# doc-viewer — Rust workspace
+#
+# The WASM core for a browser, viewer-only, high-fidelity multi-format document
+# viewer. The shared "geba" (display list IR + text/font stack + raster backend)
+# lives here; per-format frontends (PDF/DOCX/XLSX/PPTX) lower into the IR and are
+# painted by a single backend. Exposed to the web as a pure-JS npm library.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/dv-ir",
+    "crates/dv-text",
+    "crates/dv-render",
+    "crates/dv-wasm",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = ""
+rust-version = "1.80"
+
+[workspace.dependencies]
+dv-ir = { path = "crates/dv-ir" }
+dv-text = { path = "crates/dv-text" }
+dv-render = { path = "crates/dv-render" }
+
+# Raster backend: pure-Rust, CPU, Skia-grade analytic AA. ~200-300KB in wasm.
+tiny-skia = "0.11"
+# Shaping (M1 backend; abstracted behind dv-text so we can migrate to harfrust).
+rustybuzz = "0.20"
+# Font parsing + glyph outlines (Google fontations).
+skrifa = "0.26"
+
+[profile.release]
+opt-level = "z"   # size-first for wasm delivery
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
