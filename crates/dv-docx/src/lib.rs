@@ -1847,6 +1847,22 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
         }
     };
 
+    // Per-row map: column-start -> is this cell a vMerge continue? (for spanning)
+    let mut col_cont: Vec<HashMap<usize, bool>> = Vec::with_capacity(n_rows);
+    for row in &t.rows {
+        let mut ci = 0usize;
+        let mut m = HashMap::new();
+        for cell in &row.cells {
+            if ci >= ncols {
+                break;
+            }
+            let span = (cell.grid_span as usize).max(1).min(ncols - ci);
+            m.insert(ci, cell.vmerge == VMerge::Continue);
+            ci += span;
+        }
+        col_cont.push(m);
+    }
+
     for (ri, row) in t.rows.iter().enumerate() {
         // Lay out each cell; track its column span + glyphs + content height.
         let mut ci = 0usize;
@@ -1887,11 +1903,13 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             let bb = pick(cell.borders.bottom, t.borders.bottom, t.borders.inside_h, ri + 1 == n_rows);
             let bl = pick(cell.borders.left, t.borders.left, t.borders.inside_v, *c0 == 0);
             let br = pick(cell.borders.right, t.borders.right, t.borders.inside_v, *c1 == ncols);
-            // Suppress the shared edge between a vMerge restart and its continues.
+            // Suppress the shared horizontal edge between a vMerge restart/continue
+            // and the continue cell directly below it (so a merged cell reads as one).
+            let spans_down = ri + 1 < n_rows && col_cont.get(ri + 1).and_then(|m| m.get(c0)).copied() == Some(true);
             if bt.on && !is_continue {
                 td.rects.push((x, 0.0, cell_w, bt.size, bt.color));
             }
-            if bb.on {
+            if bb.on && !spans_down {
                 td.rects.push((x, row_h - bb.size, cell_w, bb.size, bb.color));
             }
             if bl.on {
