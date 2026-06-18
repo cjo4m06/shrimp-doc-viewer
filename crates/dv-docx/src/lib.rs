@@ -24,6 +24,7 @@ enum Align {
     Left,
     Center,
     Right,
+    Justify,
 }
 
 /// Partial run properties — `None` means "inherit". Used for direct overrides,
@@ -425,6 +426,7 @@ fn parse_document(xml: &str) -> Document {
                     p.direct.align = Some(match get_attr(e, b"w:val").as_deref() {
                         Some("center") => Align::Center,
                         Some("right") | Some("end") => Align::Right,
+                        Some("both") | Some("distribute") => Align::Justify,
                         _ => Align::Left,
                     });
                 }
@@ -1537,7 +1539,7 @@ fn next_tab_stop(x: f32, margin_l: f32, stops: &[(f32, Align)]) -> (f32, Align) 
 
 /// Place a wrapped line's items into glyphs, honouring tab stops + alignment
 /// (left advances to the stop, centre/right align the following segment to it).
-fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)], out: &mut Vec<PlacedGlyph>) {
+fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)], extra: f32, out: &mut Vec<PlacedGlyph>) {
     let mut x = x_start;
     let mut i = 0;
     while i < line.len() {
@@ -1550,7 +1552,7 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
             }
             let w: f32 = line[i + 1..j].iter().filter(|t| t.kind == IKind::Glyph).map(|t| t.advance).sum();
             x = match al {
-                Align::Left => pos,
+                Align::Left | Align::Justify => pos,
                 Align::Center => (pos - w / 2.0).max(x),
                 Align::Right => (pos - w).max(x),
             };
@@ -1570,7 +1572,7 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
                 highlight: it.highlight,
                 vshift: it.vshift,
             });
-            x += it.advance;
+            x += it.advance + if it.break_after { extra } else { 0.0 };
         }
         i += 1;
     }
@@ -1693,12 +1695,21 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
             let max_size = line.iter().map(|i| i.size).fold(DEFAULT_SIZE_PX, f32::max);
             let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
-            // first-line indent (only li==0, left-aligned, no list marker)
-            let fl_ind = if li == 0 && para.align == Align::Left && para.marker.is_none() { para.d_ind_first } else { 0.0 };
+            // first-line indent (only li==0, left/justify, no list marker)
+            let fl_ind = if li == 0 && matches!(para.align, Align::Left | Align::Justify) && para.marker.is_none() { para.d_ind_first } else { 0.0 };
             let x = match para.align {
-                Align::Left => body_left + fl_ind,
+                Align::Left | Align::Justify => body_left + fl_ind,
                 Align::Center => body_left + (content_w - lw) / 2.0,
                 Align::Right => body_left + (content_w - lw),
+            };
+            // Justify: distribute the line's slack across its break opportunities
+            // (every non-last line of a justified paragraph that has a tab is left alone).
+            let has_tab = line.iter().any(|i| i.kind == IKind::Tab);
+            let extra = if para.align == Align::Justify && li + 1 != n && !has_tab && content_w > lw {
+                let nb = line.iter().filter(|i| i.kind == IKind::Glyph && i.break_after).count().saturating_sub(1);
+                if nb > 0 { (content_w - lw - fl_ind) / nb as f32 } else { 0.0 }
+            } else {
+                0.0
             };
             let mut placed = Vec::with_capacity(line.len() + 4);
 
@@ -1728,7 +1739,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 }
             }
 
-            place_items(line, x, margin_l, &para.tab_stops, &mut placed);
+            place_items(line, x, margin_l, &para.tab_stops, extra, &mut placed);
             let advance = line_h + if li + 1 == n { para.spc_after } else { 0.0 };
             lines.push(Line {
                 placed,
@@ -1776,7 +1787,7 @@ fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32,
             let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
             let mut x = match para.align {
-                Align::Left => 0.0,
+                Align::Left | Align::Justify => 0.0,
                 Align::Center => (w - lw) / 2.0,
                 Align::Right => w - lw,
             };
@@ -2524,6 +2535,7 @@ fn parse_styles_xml(xml: &str) -> StyleTable {
                     let a = match get_attr(&e, b"w:val").as_deref() {
                         Some("center") => Align::Center,
                         Some("right") | Some("end") => Align::Right,
+                        Some("both") | Some("distribute") => Align::Justify,
                         _ => Align::Left,
                     };
                     if in_doc_defaults {
