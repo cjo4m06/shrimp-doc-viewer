@@ -77,6 +77,52 @@ SLIDE1 = slide([
     pic(9, "rId1", 5.5, 3.3, 3.2, 2.0),  # embedded raster image (160x100, aspect 1.6)
 ])
 
+def shape(idx, prst, x, y, w, h, fill=None, line=None, text=None, tcolor="FFFFFF"):
+    off = f'<a:off x="{int(x * EMU)}" y="{int(y * EMU)}"/>'
+    ext = f'<a:ext cx="{int(w * EMU)}" cy="{int(h * EMU)}"/>'
+    spfill = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>' if fill else "<a:noFill/>"
+    ln = f'<a:ln w="25400"><a:solidFill><a:srgbClr val="{line}"/></a:solidFill></a:ln>' if line else ""
+    if text:
+        tb = (
+            f'<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn="ctr"/>'
+            f'<a:r><a:rPr sz="1800" b="1"><a:solidFill><a:srgbClr val="{tcolor}"/></a:solidFill></a:rPr>'
+            f'<a:t>{escape(text)}</a:t></a:r></a:p></p:txBody>'
+        )
+    else:
+        tb = "<p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody>"
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{idx}" name="sp{idx}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+        f'<p:spPr><a:xfrm>{off}{ext}</a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{spfill}{ln}</p:spPr>{tb}</p:sp>'
+    )
+
+
+def custgeom(idx, x, y, w, h, pts, fill=None, line=None):
+    off = f'<a:off x="{int(x * EMU)}" y="{int(y * EMU)}"/>'
+    ext = f'<a:ext cx="{int(w * EMU)}" cy="{int(h * EMU)}"/>'
+    spfill = f'<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>' if fill else "<a:noFill/>"
+    ln = f'<a:ln w="25400"><a:solidFill><a:srgbClr val="{line}"/></a:solidFill></a:ln>' if line else ""
+    cmds = f'<a:moveTo><a:pt x="{pts[0][0]}" y="{pts[0][1]}"/></a:moveTo>'
+    for px, py in pts[1:]:
+        cmds += f'<a:lnTo><a:pt x="{px}" y="{py}"/></a:lnTo>'
+    cmds += "<a:close/>"
+    geom = f'<a:custGeom><a:avLst/><a:gdLst/><a:pathLst><a:path w="100000" h="100000">{cmds}</a:path></a:pathLst></a:custGeom>'
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{idx}" name="cg{idx}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+        f'<p:spPr><a:xfrm>{off}{ext}</a:xfrm>{geom}{spfill}{ln}</p:spPr>'
+        f'<p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>'
+    )
+
+
+SLIDE3 = slide([
+    textbox(2, 0.5, 0.2, 9.0, 0.8, [("left", [("第三張投影片 — 形狀幾何 (preset + custGeom + 外框)", 24, True, "1F2937")])]),
+    shape(3, "roundRect", 0.5, 1.2, 2.8, 1.4, fill="4F81BD", line="1F3864", text="圓角矩形"),
+    shape(4, "ellipse", 3.6, 1.2, 2.6, 1.4, fill="C0504D", line="7F1D1D", text="橢圓"),
+    shape(5, "rightArrow", 6.5, 1.35, 3.0, 1.1, fill="9BBB59", line="4F6228"),
+    shape(6, "triangle", 0.5, 3.0, 2.4, 2.2, fill="F79646", line="974806"),
+    shape(7, "pentagon", 3.3, 3.0, 2.4, 2.2, fill="4BACC6", line="215868"),
+    custgeom(8, 6.2, 3.0, 2.6, 2.2, [(50000, 0), (100000, 38000), (82000, 100000), (18000, 100000), (0, 38000)], fill="8064A2", line="3F3151"),
+])
+
 SLIDE2 = slide([
     textbox(2, 1.0, 0.5, 8.0, 1.0, [("center", [("第二張投影片", 36, True, "1F2937")])]),
     textbox(3, 1.0, 2.0, 3.6, 1.2, [("center", [("左方塊", 24, True, "FFFFFF")])], fill="4F81BD"),
@@ -92,6 +138,7 @@ CT = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
 <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
 <Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+<Override PartName="/ppt/slides/slide3.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
 </Types>"""
 
 RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -102,7 +149,7 @@ RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 PRES = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     f'<p:presentation xmlns:a="{A}" xmlns:r="{R}" xmlns:p="{P}">'
-    '<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>'
+    '<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/><p:sldId id="258" r:id="rId3"/></p:sldIdLst>'
     f'<p:sldSz cx="{SLIDE_CX}" cy="{SLIDE_CY}"/></p:presentation>'
 )
 
@@ -110,6 +157,7 @@ PRES_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide3.xml"/>
 </Relationships>"""
 
 
@@ -132,6 +180,7 @@ def main(path):
         z.writestr("ppt/slides/slide1.xml", SLIDE1)
         z.writestr("ppt/slides/_rels/slide1.xml.rels", SLIDE1_RELS)
         z.writestr("ppt/slides/slide2.xml", SLIDE2)
+        z.writestr("ppt/slides/slide3.xml", SLIDE3)
         z.writestr("ppt/media/image1.png", img_bytes)
     print("wrote", path)
 
