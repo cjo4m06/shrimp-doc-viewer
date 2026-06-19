@@ -15,6 +15,8 @@ examples/assets/fonts/
 examples/assets/realtest*
 *.png
 !docs/**/*.png
+# but DO commit the tiny synthetic test fixtures the crate tests read
+!crates/**/tests/**/*.png
 
 # Editor / OS
 .DS_Store
