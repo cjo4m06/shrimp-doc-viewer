@@ -228,15 +228,34 @@ pub fn render_docx(docx: Vec<u8>, font_bytes: Vec<u8>) -> RenderedImage {
 #[wasm_bindgen]
 pub struct DocxDoc {
     doc: dv_docx::DocxDoc,
-    font: Vec<u8>,
+    registry: FontRegistry,
 }
 
 #[wasm_bindgen]
 impl DocxDoc {
+    /// `font` is the default/fallback face. `extra` is an Array of [name, Uint8Array]
+    /// pairs: caller-provided fonts for families the document declares but does not
+    /// embed (e.g. ["標楷體", <bytes>]). Embedded fonts in the file are loaded too.
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> DocxDoc {
-        let measure_font = FontData::new(font.clone());
-        DocxDoc { doc: dv_docx::DocxDoc::parse(&bytes, &measure_font), font }
+    pub fn new(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> DocxDoc {
+        use wasm_bindgen::JsCast;
+        let mut extra_fonts: Vec<(String, FontData)> = Vec::new();
+        for v in extra.iter() {
+            if let Ok(pair) = v.dyn_into::<js_sys::Array>() {
+                let name = pair.get(0).as_string().unwrap_or_default();
+                if let Ok(arr) = pair.get(1).dyn_into::<js_sys::Uint8Array>() {
+                    if !name.is_empty() {
+                        extra_fonts.push((name, FontData::new(arr.to_vec())));
+                    }
+                }
+            }
+        }
+        let doc = dv_docx::DocxDoc::parse_with_fonts(&bytes, FontData::new(font), extra_fonts);
+        let mut registry = FontRegistry::new();
+        for (i, fd) in doc.fonts().data().iter().enumerate() {
+            registry.insert(FontId(i as u32), fd.clone());
+        }
+        DocxDoc { doc, registry }
     }
 
     #[wasm_bindgen(js_name = pageCount)]
@@ -254,9 +273,7 @@ impl DocxDoc {
     #[wasm_bindgen(js_name = renderPage)]
     pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
         let dl = self.doc.render_page(idx, scale);
-        let mut registry = FontRegistry::new();
-        registry.insert(FontId(0), FontData::new(self.font.clone()));
-        let rgba = render(&dl, &registry);
+        let rgba = render(&dl, &self.registry);
         RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
     }
 }

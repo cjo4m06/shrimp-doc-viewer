@@ -11,7 +11,11 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
  * Mount a virtualized DOCX viewer into `container`.
  * @param {HTMLElement} container
  * @param {Uint8Array} bytes
- * @param {{ fontUrl?: string, cjkFallbackFontUrl?: string, zoom?: number, onZoom?: (z:number)=>void }} [opts]
+ * @param {{ fontUrl?: string, cjkFallbackFontUrl?: string, fonts?: Record<string,string|Uint8Array|ArrayBuffer>, zoom?: number, onZoom?: (z:number)=>void }} [opts]
+ *
+ * `opts.fonts` maps a declared font family to a font file (URL string, Uint8Array,
+ * or ArrayBuffer): the document's runs that name that family render with it (e.g.
+ * `{ "標楷體": "/fonts/BiauKai.ttf" }`). Embedded fonts in the file load automatically.
  */
 export async function renderDocxInto(container, bytes, opts = {}) {
   await init();
@@ -20,7 +24,16 @@ export async function renderDocxInto(container, bytes, opts = {}) {
     throw new Error("renderDocxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
   }
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
-  const doc = new DocxDoc(bytes, fontBytes);
+  // Resolve the caller font map (family name -> bytes) into [name, Uint8Array] pairs.
+  const extra = [];
+  for (const [name, src] of Object.entries(opts.fonts || {})) {
+    let u8;
+    if (src instanceof Uint8Array) u8 = src;
+    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
+    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
+    extra.push([name, u8]);
+  }
+  const doc = new DocxDoc(bytes, fontBytes, extra);
   return new DocxViewer(container, doc, opts);
 }
 
