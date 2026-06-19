@@ -175,6 +175,14 @@ to OOXML/PDF first. The self-written renderers target **viewer-grade fidelity**
 proprietary system font the file only *declares* renders in the bundled fallback
 unless you supply it via `fonts`.
 
+### Hit an unsupported format, or a file that won't render?
+
+Please [open an issue](https://github.com/cjo4m06/shrimp-doc-viewer/issues) and attach
+**the smallest file that reproduces it** — a minimal repro is usually enough to add
+support or fix the bug. Don't upload confidential documents: reduce it to a synthetic
+sample (a one-line/one-cell/one-slide file showing the problem), or redact the content
+and keep only the structure that breaks. A screenshot of the wrong output helps too.
+
 ## How it works
 
 ```

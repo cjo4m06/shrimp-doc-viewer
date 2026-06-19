@@ -209,7 +209,9 @@ async function dispatch(target, bytes, format, options) {
       throw new Error(
         `ShrimpDocViewer.mount(): detected "${format}" — supported: PDF · DOCX · XLSX · PPTX · ` +
           `CSV · TXT/Markdown · RTF · ODF (odt/ods/odp) · images. ` +
-          `Legacy binary (.doc/.xls/.ppt) is out of scope (convert server-side).`
+          `Legacy binary (.doc/.xls/.ppt) is out of scope (convert server-side). ` +
+          `If this format should be supported, or a file fails to render, please open an issue ` +
+          `with the smallest file that reproduces it: https://github.com/cjo4m06/shrimp-doc-viewer/issues`
       );
   }
 }

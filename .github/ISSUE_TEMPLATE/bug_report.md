@@ -12,8 +12,10 @@ labels: bug
 ## Format & input
 
 - File type: <!-- PDF / DOCX / XLSX / PPTX / CSV / MD / RTF / ODT / ODS / ODP / image -->
-- Can you share a **synthetic/redacted** sample that reproduces it? (Do not upload
-  confidential documents.)
+- **Attach the smallest file that reproduces it.** A minimal repro (one paragraph /
+  cell / slide showing the problem) is usually all that's needed to fix it. Do NOT
+  upload confidential documents — reduce to a synthetic sample or redact the content,
+  keeping only the structure that breaks.
 
 ## Steps to reproduce
 
