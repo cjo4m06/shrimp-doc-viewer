@@ -3,46 +3,148 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ShrimpDocViewer — M1 geba demo</title>
+    <title>ShrimpDocViewer — drop any document, render it in the browser</title>
+    <meta name="description" content="Browser, viewer-only, multi-format document viewer. PDF · Word · Excel · PowerPoint · CSV · Markdown · RTF · ODF · images. One mount() call, fully client-side, zero config, CJK that just works." />
+    <!-- PDF rendering imports @embedpdf/pdfium (a bare specifier); map it for the no-bundler demo. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@embedpdf/pdfium": "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/index.browser.js"
+        }
+      }
+    </script>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-      h1 { font-size: 1.25rem; }
-      canvas { border: 1px solid #ddd; border-radius: 6px; display: block; margin-top: 1rem; }
-      #status { font: 13px/1.5 ui-monospace, monospace; color: #555; white-space: pre-wrap; }
-      .err { color: #c0392b; }
+      :root { --bg: #f6f7f9; --fg: #1d2330; --muted: #5a6473; --line: #e3e7ec; --accent: #c0392b; }
+      * { box-sizing: border-box; }
+      body { font-family: system-ui, -apple-system, "Noto Sans TC", sans-serif; margin: 0; color: var(--fg); background: var(--bg); }
+      header { padding: 1.1rem 1.4rem .9rem; border-bottom: 1px solid var(--line); background: #fff; }
+      .title { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+      .title b { font-size: 1.35rem; letter-spacing: -.01em; }
+      .title .shrimp { font-size: 1.35rem; }
+      .title a { color: var(--muted); text-decoration: none; font-size: .82rem; }
+      .title a:hover { color: var(--accent); }
+      .tag { margin: .35rem 0 0; color: var(--muted); font-size: .92rem; line-height: 1.5; }
+      .tag code { background: #eef0f3; padding: .1em .4em; border-radius: 4px; font-size: .85em; }
+      .toolbar { padding: .8rem 1.4rem; display: flex; gap: .5rem .65rem; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(246,247,249,.95); backdrop-filter: blur(6px); z-index: 5; }
+      .toolbar .lead { font-size: .85rem; color: var(--muted); margin-right: .2rem; }
+      .chip { font: inherit; font-size: .83rem; padding: .32rem .7rem; border: 1px solid var(--line); background: #fff; border-radius: 999px; cursor: pointer; color: var(--fg); }
+      .chip:hover { border-color: var(--accent); color: var(--accent); }
+      .chip.cjk { border-color: #d9b3b0; }
+      label.file { font-size: .83rem; padding: .32rem .7rem; border: 1px dashed #c2c8d0; border-radius: 999px; cursor: pointer; color: var(--muted); }
+      label.file input { display: none; }
+      #status { font: 12.5px/1.5 ui-monospace, monospace; color: var(--muted); margin-left: auto; }
+      #status.err { color: var(--accent); }
+      #stage { position: relative; min-height: 60vh; padding: 1.2rem 1.4rem 3rem; }
+      #viewer { display: block; }
+      #hint { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--muted); pointer-events: none; padding: 2rem; }
+      #hint .big { font-size: 1.1rem; color: var(--fg); margin-bottom: .4rem; }
+      #drop-veil { position: fixed; inset: 0; background: rgba(192,57,43,.08); border: 3px dashed var(--accent); display: none; align-items: center; justify-content: center; font-size: 1.4rem; color: var(--accent); z-index: 50; }
+      #drop-veil.on { display: flex; }
+      .spin { display: inline-block; width: 1em; height: 1em; border: 2px solid #ccc; border-top-color: var(--accent); border-radius: 50%; animation: s .7s linear infinite; vertical-align: -2px; margin-right: .4em; }
+      @keyframes s { to { transform: rotate(360deg); } }
     </style>
   </head>
   <body>
-    <h1>ShrimpDocViewer — M1 共用地基 demo (Rust/WASM)</h1>
-    <p id="status">loading…</p>
-    <canvas id="c" width="900" height="220"></canvas>
+    <header>
+      <div class="title">
+        <span class="shrimp">🦐</span><b>ShrimpDocViewer</b>
+        <a href="https://github.com/cjo4m06/shrimp-doc-viewer" target="_blank" rel="noopener">GitHub ↗</a>
+        <a href="https://www.npmjs.com/package/shrimp-doc-viewer" target="_blank" rel="noopener">npm ↗</a>
+      </div>
+      <p class="tag">
+        瀏覽器內、純前端的多格式文件檢視器 — 一行 <code>mount(el, file)</code> 顯示 PDF · Word · Excel · PowerPoint · CSV · Markdown · RTF · ODF · 圖片。零後端、零設定,中文/CJK 直接正確顯示。<br />
+        Drop a document below — it renders faithfully in your browser. No server, no setup; your file never leaves the page.
+      </p>
+    </header>
+
+    <div class="toolbar">
+      <span class="lead">一鍵試 / try:</span>
+      <button class="chip cjk" data-src="sample.docx" data-label="中文 Word">中文 Word</button>
+      <button class="chip cjk" data-src="sample-zhTW.pdf" data-label="中文 PDF">中文 PDF</button>
+      <button class="chip cjk" data-src="cjk.rtf" data-label="中文 RTF">中文 RTF</button>
+      <button class="chip" data-src="sample.xlsx" data-label="Excel">Excel</button>
+      <button class="chip" data-src="sample.pptx" data-label="PowerPoint">PowerPoint</button>
+      <button class="chip" data-src="stress.md" data-label="Markdown">Markdown</button>
+      <button class="chip" data-src="styled.odt" data-label="ODT">ODT</button>
+      <button class="chip" data-src="sample.svg" data-label="圖片 SVG">圖片</button>
+      <label class="file">選擇檔案 / pick a file<input id="file" type="file" /></label>
+      <span id="status">ready.</span>
+    </div>
+
+    <div id="stage">
+      <div id="hint">
+        <div class="big">拖放任何文件到這裡 &nbsp;·&nbsp; Drop any file here</div>
+        <div>或點上方的範例 — 全部在你的瀏覽器渲染,沒有檔案被上傳。</div>
+      </div>
+      <div id="viewer"></div>
+    </div>
+
+    <div id="drop-veil">放開以開啟 / drop to open</div>
 
     <script type="module">
-      import { init, renderToCanvas } from "/packages/doc-viewer/src/index.js";
+      import { mount } from "/packages/doc-viewer/src/index.js";
 
+      const PKG_FONT = "/packages/doc-viewer/fonts/NotoSansTC-VF.ttf";
+      // PDF only: PDFium wasm + the embedpdf module URL (the render Worker can't read
+      // the page's import map, so it needs the explicit URL).
+      const PDFIUM_WASM = "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/pdfium.wasm";
+      const EMBEDPDF_URL = "/packages/doc-viewer/node_modules/@embedpdf/pdfium/dist/index.browser.js";
       const status = document.getElementById("status");
-      const canvas = document.getElementById("c");
+      const viewerEl = document.getElementById("viewer");
+      const hint = document.getElementById("hint");
+      const veil = document.getElementById("drop-veil");
+      let current = null;
 
-      try {
-        const { version } = await init();
-        status.textContent = `WASM core v${version} loaded. Rendering 繁體中文 through the geba…`;
-
-        await renderToCanvas(canvas, {
-          // Local Noto Sans TC subset containing exactly the demo glyphs.
-          fontUrl: "/packages/doc-viewer/fonts/NotoSansTC-VF.ttf",
-          text: "Hello,你好，繁體中文0123",
-          size: 64,
-          x: 28,
-          baseline: 140,
-        });
-
-        status.textContent = `WASM core v${version} — rendered ✓ (shape → outline → tiny-skia raster, in-browser)`;
-        document.body.dataset.dvStatus = "ok";
-      } catch (e) {
-        status.className = "err";
-        status.textContent = "ERROR: " + (e && e.stack ? e.stack : e);
-        document.body.dataset.dvStatus = "error";
+      async function render(bytes, label) {
+        hint.style.display = "none";
+        status.className = "";
+        status.innerHTML = `<span class="spin"></span>rendering ${label}…`;
+        try {
+          if (current && current.destroy) current.destroy();
+          viewerEl.replaceChildren();
+          const t0 = performance.now();
+          // cjkFallbackFontUrl covers PDFs that don't embed CJK fonts; other formats
+          // fall back to the bundled default font automatically.
+          current = await mount(viewerEl, bytes, {
+            cjkFallbackFontUrl: PKG_FONT, // PDFs without embedded CJK fonts
+            pdfiumWasmUrl: PDFIUM_WASM,
+            embedpdfUrl: EMBEDPDF_URL,
+            height: "78vh",
+          });
+          const ms = Math.round(performance.now() - t0);
+          const extra = current.pageCount != null ? `${current.pageCount} 頁` : current.sheetNames ? `${current.sheetNames.length} 工作表` : "";
+          status.textContent = `✓ ${label} ${extra ? "· " + extra + " " : ""}· ${ms}ms · 100% client-side`;
+        } catch (e) {
+          status.className = "err";
+          status.textContent = "✗ " + (e && e.message ? e.message : e);
+          hint.style.display = "";
+        }
       }
+
+      async function renderUrl(src, label) {
+        status.innerHTML = `<span class="spin"></span>loading ${label}…`;
+        const bytes = new Uint8Array(await (await fetch("/examples/assets/" + src)).arrayBuffer());
+        render(bytes, label);
+      }
+
+      for (const chip of document.querySelectorAll(".chip")) {
+        chip.addEventListener("click", () => renderUrl(chip.dataset.src, chip.dataset.label));
+      }
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const f = e.target.files[0];
+        if (f) render(new Uint8Array(await f.arrayBuffer()), f.name);
+      });
+
+      // whole-page drag & drop
+      let depth = 0;
+      window.addEventListener("dragenter", (e) => { e.preventDefault(); depth++; veil.classList.add("on"); });
+      window.addEventListener("dragover", (e) => e.preventDefault());
+      window.addEventListener("dragleave", (e) => { e.preventDefault(); if (--depth <= 0) { depth = 0; veil.classList.remove("on"); } });
+      window.addEventListener("drop", async (e) => {
+        e.preventDefault(); depth = 0; veil.classList.remove("on");
+        const f = e.dataTransfer.files[0];
+        if (f) render(new Uint8Array(await f.arrayBuffer()), f.name);
+      });
     </script>
   </body>
 </html>
