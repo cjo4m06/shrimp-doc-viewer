@@ -8,7 +8,11 @@ import { PptxDeck } from "../wasm/dv_wasm.js";
  * Mount a PPTX slide viewer into `container`.
  * @param {HTMLElement} container
  * @param {Uint8Array} bytes
- * @param {{ fontUrl?: string, cjkFallbackFontUrl?: string, slideIndex?: number }} [opts]
+ * @param {{ fontUrl?: string, cjkFallbackFontUrl?: string, fonts?: Record<string,string|Uint8Array|ArrayBuffer>, slideIndex?: number }} [opts]
+ *
+ * `opts.fonts` maps a declared typeface to a font file (URL | Uint8Array | ArrayBuffer);
+ * runs naming that face render with it (e.g. `{ "標楷體": "/fonts/BiauKai.ttf" }`).
+ * PowerPoint-embedded fonts are MicroType-Express EOT and cannot be loaded.
  */
 export async function renderPptxInto(container, bytes, opts = {}) {
   await init();
@@ -17,7 +21,15 @@ export async function renderPptxInto(container, bytes, opts = {}) {
     throw new Error("renderPptxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
   }
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
-  const deck = new PptxDeck(bytes, fontBytes);
+  const extra = [];
+  for (const [name, src] of Object.entries(opts.fonts || {})) {
+    let u8;
+    if (src instanceof Uint8Array) u8 = src;
+    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
+    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
+    extra.push([name, u8]);
+  }
+  const deck = new PptxDeck(bytes, fontBytes, extra);
   return new PptxViewer(container, deck, opts);
 }
 

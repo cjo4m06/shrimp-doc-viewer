@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
 use dv_ir::{Color, Command, DisplayList, FontId, GlyphRun, Paint, PositionedGlyph};
-use dv_text::{shape, FontData};
+use dv_text::{is_cjk, shape, FontData, Fonts};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use zip::ZipArchive;
@@ -363,91 +363,6 @@ fn highlight_color(name: &str) -> Option<Color> {
         _ => return None,
     };
     Some(Color::rgb(c.0, c.1, c.2))
-}
-
-fn is_cjk(ch: char) -> bool {
-    let c = ch as u32;
-    (0x2E80..=0x9FFF).contains(&c)
-        || (0xAC00..=0xD7A3).contains(&c)
-        || (0xF900..=0xFAFF).contains(&c)
-        || (0xFF00..=0xFFEF).contains(&c)
-}
-
-/// Standalone symbol/dingbat characters (bullets, boxes, arrows, checkboxes) that
-/// a dedicated symbol font renders better than a text font.
-fn is_symbol(ch: char) -> bool {
-    let c = ch as u32;
-    matches!(c,
-        0x2022..=0x2023 | 0x2043 | 0x204C..=0x204D
-        | 0x2190..=0x21FF // arrows
-        | 0x2460..=0x24FF // enclosed alphanumerics
-        | 0x25A0..=0x25FF // geometric shapes ■□●○◆◇▪▶
-        | 0x2600..=0x27BF // misc symbols + dingbats + checkboxes ☐☑
-        | 0x2B00..=0x2BFF)
-}
-
-/// Multiple loaded fonts plus selection by the run's declared family name and the
-/// character's script. Index 0 is the default (covers CJK + Latin via Noto);
-/// embedded / caller-provided fonts are appended and matched by declared name.
-pub struct Fonts {
-    list: Vec<FontData>,
-    cover: Vec<std::collections::HashSet<u32>>, // parallel to list: covered code points
-    by_name: HashMap<String, usize>,
-    cjk: usize,
-    latin: usize,
-    symbol: usize,
-}
-
-impl Fonts {
-    fn new(default: FontData, extras: Vec<(String, FontData)>) -> Fonts {
-        let mut list = vec![default];
-        let mut by_name = HashMap::new();
-        let mut symbol = 0usize;
-        for (name, fd) in extras {
-            let idx = list.len();
-            list.push(fd);
-            let low = name.to_lowercase();
-            if low.contains("symbol") || low.contains("wingding") || low.contains("dingbat") || low.contains("webding") {
-                symbol = idx;
-            }
-            by_name.entry(low).or_insert(idx);
-        }
-        let cover = list.iter().map(|f| f.coverage()).collect();
-        Fonts { list, cover, by_name, cjk: 0, latin: 0, symbol }
-    }
-    fn covers(&self, i: usize, ch: char) -> bool {
-        ch.is_whitespace() || self.cover.get(i).map(|s| s.contains(&(ch as u32))).unwrap_or(false)
-    }
-    /// Pick the font index for one character: the run's declared face if it has the
-    /// glyph, else the script default, else any loaded font that covers it.
-    fn idx_for(&self, ascii: Option<&str>, ea: Option<&str>, ch: char) -> usize {
-        let declared = if is_cjk(ch) { ea.or(ascii) } else { ascii.or(ea) };
-        if let Some(name) = declared {
-            if let Some(&i) = self.by_name.get(&name.to_lowercase()) {
-                if self.covers(i, ch) {
-                    return i;
-                }
-            }
-        }
-        let fb = if is_symbol(ch) {
-            self.symbol
-        } else if is_cjk(ch) {
-            self.cjk
-        } else {
-            self.latin
-        };
-        if self.covers(fb, ch) {
-            return fb;
-        }
-        (0..self.list.len()).find(|&i| self.covers(i, ch)).unwrap_or(fb)
-    }
-    fn get(&self, i: usize) -> &FontData {
-        &self.list[i.min(self.list.len().saturating_sub(1))]
-    }
-    /// The loaded fonts, indexed by the FontId used in emitted glyph runs.
-    pub fn data(&self) -> &[FontData] {
-        &self.list
-    }
 }
 
 /// A table being assembled during parsing.

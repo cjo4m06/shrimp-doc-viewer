@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 use dv_ir::{Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PathVerb, PositionedGlyph, Transform};
-use dv_text::{shape, FontData};
+use dv_text::{is_cjk, shape, Fonts};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use zip::ZipArchive;
@@ -38,6 +38,8 @@ struct Run {
     underline: bool,
     color: Color,
     highlight: Option<Color>,
+    font_latin: Option<String>,    // a:latin/a:cs typeface
+    font_east_asia: Option<String>, // a:ea typeface
 }
 
 struct Para {
@@ -417,11 +419,6 @@ fn apply_mod(c: Color, kind: &[u8], val: f32) -> Color {
     }
 }
 
-fn is_cjk(ch: char) -> bool {
-    let c = ch as u32;
-    (0x2E80..=0x9FFF).contains(&c) || (0xAC00..=0xD7A3).contains(&c) || (0xF900..=0xFAFF).contains(&c) || (0xFF00..=0xFFEF).contains(&c)
-}
-
 /// Inherited run defaults for a placeholder kind (title vs body), resolved from
 /// the master title/body styles overridden by the layout placeholder styles.
 #[derive(Clone, Copy, Default)]
@@ -667,7 +664,7 @@ impl Deck {
     }
 
     /// Render slide `idx` at `scale` (= zoom × dpr) into a device-px display list.
-    pub fn render_slide(&self, idx: usize, font: &FontData, scale: f32) -> DisplayList {
+    pub fn render_slide(&self, idx: usize, fonts: &Fonts, scale: f32) -> DisplayList {
         let mut dl = DisplayList::new((self.width * scale).max(1.0), (self.height * scale).max(1.0));
         let Some(sd) = self.slides.get(idx) else { return dl };
         let shapes = &sd.shapes;
@@ -759,12 +756,12 @@ impl Deck {
             if sh.paras.is_empty() {
                 continue;
             }
-            self.layout_shape_text(&mut dl, font, sh, scale);
+            self.layout_shape_text(&mut dl, fonts, sh, scale);
         }
         dl
     }
 
-    fn layout_shape_text(&self, dl: &mut DisplayList, font: &FontData, sh: &Shape, scale: f32) {
+    fn layout_shape_text(&self, dl: &mut DisplayList, fonts: &Fonts, sh: &Shape, scale: f32) {
         let b = &sh.body;
         let fs = b.font_scale;
         let left = (sh.x + b.ins_l) * scale;
@@ -794,7 +791,7 @@ impl Deck {
                 (c.clone(), sz, col)
             });
             let text_w = (content_w - para.mar_l * scale).max(8.0);
-            let items = shape_para(font, para, scale, fs);
+            let items = shape_para(fonts, para, scale, fs);
             let wrapped = if items.is_empty() { vec![Vec::new()] } else { wrap(items, text_w) };
             for (li, line) in wrapped.into_iter().enumerate() {
                 let max_size = line.iter().map(|i| i.size).fold(14.0 * scale * fs, f32::max);
@@ -838,7 +835,9 @@ impl Deck {
             };
             // Bullet (hangs at text_left + indent).
             if let Some((ch, bsz, bcol)) = &ln.bullet {
-                let shaped = shape(font, ch, *bsz);
+                let bc = ch.chars().next().unwrap_or(' ');
+                let bf = if fonts.covers(0, bc) { 0 } else { fonts.idx_for(None, None, bc) };
+                let shaped = shape(fonts.get(bf), ch, *bsz);
                 let s = *bsz / shaped.units_per_em.max(1.0);
                 let mut bx = text_left + ln.indent;
                 let mut glyphs = Vec::new();
@@ -846,7 +845,7 @@ impl Deck {
                     glyphs.push(PositionedGlyph { id: g.glyph_id, x: bx + g.x_offset * s, y: baseline });
                     bx += g.x_advance * s;
                 }
-                dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: *bsz, paint: Paint::Solid(*bcol), bold: false, glyphs }));
+                dl.push(Command::Glyphs(GlyphRun { font: FontId(bf as u32), size: *bsz, paint: Paint::Solid(*bcol), bold: false, glyphs }));
             }
             // Highlight background runs first (so glyphs sit on top).
             {
@@ -872,7 +871,7 @@ impl Deck {
             let mut x = x_start;
             let mut i = 0;
             while i < ln.items.len() {
-                let (size, color, bold, ul) = (ln.items[i].size, ln.items[i].color, ln.items[i].bold, ln.items[i].underline);
+                let (size, color, bold, ul, fnt) = (ln.items[i].size, ln.items[i].color, ln.items[i].bold, ln.items[i].underline, ln.items[i].font);
                 let run_x0 = x;
                 let mut glyphs = Vec::new();
                 while i < ln.items.len()
@@ -880,12 +879,13 @@ impl Deck {
                     && ln.items[i].color == color
                     && ln.items[i].bold == bold
                     && ln.items[i].underline == ul
+                    && ln.items[i].font == fnt
                 {
                     glyphs.push(PositionedGlyph { id: ln.items[i].gid, x: x + ln.items[i].x_off, y: baseline });
                     x += ln.items[i].advance;
                     i += 1;
                 }
-                dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size, paint: Paint::Solid(color), bold, glyphs }));
+                dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size, paint: Paint::Solid(color), bold, glyphs }));
                 if ul && x > run_x0 {
                     let uy = baseline + size * 0.12;
                     dl.push(fill_rect(run_x0, uy, x - run_x0, (size * 0.06).max(1.0), color));
@@ -1331,6 +1331,8 @@ fn parse_part_shapes(
                         underline: false,
                         color: cur_ph.color.unwrap_or(Color::BLACK),
                         highlight: None,
+                        font_latin: None,
+                        font_east_asia: None,
                     })
                 }
                 b"a:rPr" => {
@@ -1347,13 +1349,18 @@ fn parse_part_shapes(
                         }
                     }
                 }
-                b"a:latin" | b"a:ea" | b"a:cs" => {
-                    // We can't load the embedded Latin fonts (Epilogue Black, …) for CJK,
-                    // but approximate their weight: a "Black"/"Bold"/"Heavy" face -> faux-bold.
+                tag @ (b"a:latin" | b"a:ea" | b"a:cs") => {
                     if in_rpr {
                         if let (Some(r), Some(tf)) = (cur_run.as_mut(), get_attr(&e, b"typeface")) {
+                            // a "Black"/"Bold"/"Heavy" face name implies faux-bold weight.
                             if ["Black", "Bold", "Heavy", "Semibold", "SemiBold"].iter().any(|w| tf.contains(w)) {
                                 r.bold = true;
+                            }
+                            // remember the declared face for per-run font selection
+                            if tag == b"a:ea" {
+                                r.font_east_asia = Some(tf);
+                            } else {
+                                r.font_latin = Some(tf);
                             }
                         }
                     }
@@ -1477,29 +1484,44 @@ struct Item {
     highlight: Option<Color>,
     break_after: bool,
     is_space: bool,
+    font: usize,
 }
 
-fn shape_para(font: &FontData, para: &Para, scale: f32, font_scale: f32) -> Vec<Item> {
+fn shape_para(fonts: &Fonts, para: &Para, scale: f32, font_scale: f32) -> Vec<Item> {
     let mut items = Vec::new();
     for run in &para.runs {
         let px = run.size * scale * font_scale;
-        let shaped = shape(font, &run.text, px);
-        let s = px / shaped.units_per_em.max(1.0);
-        for g in &shaped.glyphs {
-            let ch = run.text.get(g.cluster as usize..).and_then(|x| x.chars().next()).unwrap_or(' ');
-            let is_space = ch.is_whitespace();
-            items.push(Item {
-                gid: g.glyph_id,
-                advance: g.x_advance * s,
-                x_off: g.x_offset * s,
-                size: px,
-                color: run.color,
-                bold: run.bold,
-                underline: run.underline,
-                highlight: run.highlight,
-                break_after: is_space || is_cjk(ch),
-                is_space,
-            });
+        // Split each run into maximal same-font segments (declared face -> script).
+        let chars: Vec<char> = run.text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let fi = fonts.idx_for(run.font_latin.as_deref(), run.font_east_asia.as_deref(), chars[i]);
+            let mut sub = String::new();
+            while i < chars.len()
+                && fonts.idx_for(run.font_latin.as_deref(), run.font_east_asia.as_deref(), chars[i]) == fi
+            {
+                sub.push(chars[i]);
+                i += 1;
+            }
+            let shaped = shape(fonts.get(fi), &sub, px);
+            let s = px / shaped.units_per_em.max(1.0);
+            for g in &shaped.glyphs {
+                let ch = sub.get(g.cluster as usize..).and_then(|x| x.chars().next()).unwrap_or(' ');
+                let is_space = ch.is_whitespace();
+                items.push(Item {
+                    gid: g.glyph_id,
+                    advance: g.x_advance * s,
+                    x_off: g.x_offset * s,
+                    size: px,
+                    color: run.color,
+                    bold: run.bold,
+                    underline: run.underline,
+                    highlight: run.highlight,
+                    break_after: is_space || is_cjk(ch),
+                    is_space,
+                    font: fi,
+                });
+            }
         }
     }
     items

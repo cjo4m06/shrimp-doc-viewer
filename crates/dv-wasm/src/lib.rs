@@ -179,14 +179,35 @@ impl XlsxBook {
 #[wasm_bindgen]
 pub struct PptxDeck {
     deck: dv_pptx::Deck,
-    font: Vec<u8>,
+    fonts: dv_text::Fonts,
+    registry: FontRegistry,
 }
 
 #[wasm_bindgen]
 impl PptxDeck {
+    /// `font` is the default/fallback face; `extra` is an Array of [name, Uint8Array]
+    /// caller fonts for families the deck declares but doesn't embed (e.g. 標楷體).
+    /// (PowerPoint-embedded fonts are MicroType-Express-compressed EOT, not loadable.)
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> PptxDeck {
-        PptxDeck { deck: dv_pptx::Deck::parse(&bytes), font }
+    pub fn new(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> PptxDeck {
+        use wasm_bindgen::JsCast;
+        let mut extra_fonts: Vec<(String, FontData)> = Vec::new();
+        for v in extra.iter() {
+            if let Ok(pair) = v.dyn_into::<js_sys::Array>() {
+                let name = pair.get(0).as_string().unwrap_or_default();
+                if let Ok(arr) = pair.get(1).dyn_into::<js_sys::Uint8Array>() {
+                    if !name.is_empty() {
+                        extra_fonts.push((name, FontData::new(arr.to_vec())));
+                    }
+                }
+            }
+        }
+        let fonts = dv_text::Fonts::new(FontData::new(font), extra_fonts);
+        let mut registry = FontRegistry::new();
+        for (i, fd) in fonts.data().iter().enumerate() {
+            registry.insert(FontId(i as u32), fd.clone());
+        }
+        PptxDeck { deck: dv_pptx::Deck::parse(&bytes), fonts, registry }
     }
 
     #[wasm_bindgen(js_name = slideCount)]
@@ -202,11 +223,8 @@ impl PptxDeck {
 
     #[wasm_bindgen(js_name = renderSlide)]
     pub fn render_slide(&self, idx: usize, scale: f32) -> RenderedImage {
-        let font = FontData::new(self.font.clone());
-        let dl = self.deck.render_slide(idx, &font, scale);
-        let mut registry = FontRegistry::new();
-        registry.insert(FontId(0), FontData::new(self.font.clone()));
-        let rgba = render(&dl, &registry);
+        let dl = self.deck.render_slide(idx, &self.fonts, scale);
+        let rgba = render(&dl, &self.registry);
         RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
     }
 }
