@@ -623,6 +623,7 @@ fn parse_document(xml: &str) -> Document {
     let mut tables: Vec<TableBuild> = Vec::new();
     let mut border_ctx: u8 = 0; // 0 none, 1 pBdr, 2 tblBorders, 3 tcBorders
     let mut in_tcpr = false;
+    let mut in_rpr = false; // inside a w:rPr (a run's or a paragraph-mark's run props)
     // depth inside revision-tracking *Change snapshots (pPrChange / tblGridChange /
     // tcPrChange …) — their contents are stale and must be ignored.
     let mut in_change: u32 = 0;
@@ -886,6 +887,11 @@ fn parse_document(xml: &str) -> Document {
                     b"w:tcBorders" => border_ctx = 3,
                     b"w:pBdr" => border_ctx = 1,
                     b"w:tcPr" => in_tcpr = true,
+                    b"w:rPr" => {
+                        if !is_empty {
+                            in_rpr = true;
+                        }
+                    }
                     b"w:gridSpan" => {
                         if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
                             if let Some(c) = tb.cur_cell.as_mut() {
@@ -985,7 +991,11 @@ fn parse_document(xml: &str) -> Document {
                                 r.direct.highlight = col;
                             }
                         } else if let Some(p) = cur_para.as_mut() {
-                            p.shd = col;
+                            // Only a direct w:pPr/w:shd is the paragraph background; a
+                            // w:shd inside w:pPr/w:rPr shades the paragraph MARK only.
+                            if !in_rpr {
+                                p.shd = col;
+                            }
                         }
                     }
                     b"w:headerReference" => {
@@ -1031,6 +1041,7 @@ fn parse_document(xml: &str) -> Document {
                 b"w:tabs" => in_tabs = false,
                 b"w:tblBorders" | b"w:tcBorders" | b"w:pBdr" => border_ctx = 0,
                 b"w:tcPr" => in_tcpr = false,
+                b"w:rPr" => in_rpr = false,
                 b"wp:posOffset" => pos_target = 0,
                 b"a:ln" if cur_float.is_some() => in_dln = false,
                 b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" | b"a:quadBezTo" if cur_float.is_some() => {
