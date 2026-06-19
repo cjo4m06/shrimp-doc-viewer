@@ -15,7 +15,10 @@
   "files": [
     "src",
     "wasm",
-    "fonts"
+    "fonts",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "THIRD-PARTY-NOTICES.txt"
   ],
   "sideEffects": [
     "./wasm/dv_wasm.js"

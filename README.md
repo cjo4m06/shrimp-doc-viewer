@@ -215,6 +215,21 @@ cargo run -p dv-docx --example docx_demo -- <file.docx> <font.ttf>
 cargo run -p dv-pptx --example pptx_demo -- <file.pptx> <font.ttf>
 ```
 
+## Contributing
+
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for build/test steps and the
+PR checklist. Rendering changes should include before/after screenshots.
+
 ## License
 
-MIT OR Apache-2.0.
+Licensed under either of **MIT** ([LICENSE-MIT](packages/doc-viewer/LICENSE-MIT)) or
+**Apache-2.0** ([LICENSE-APACHE](packages/doc-viewer/LICENSE-APACHE)) at your option.
+
+Third-party Rust components compiled into the wasm core are all permissively licensed;
+their notices are in [THIRD-PARTY-NOTICES.txt](packages/doc-viewer/THIRD-PARTY-NOTICES.txt).
+The bundled font (Noto Sans TC) is under the SIL OFL 1.1 — see
+[fonts/OFL.txt](packages/doc-viewer/fonts/OFL.txt). PDF rendering uses PDFium via
+`@embedpdf/pdfium` (its own license travels with that package).
+
+Unless you state otherwise, any contribution you submit is dual-licensed MIT OR
+Apache-2.0, with no additional terms.
