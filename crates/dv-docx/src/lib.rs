@@ -1077,11 +1077,15 @@ fn parse_document(xml: &str) -> Document {
                         s.y = s.y * sy + ty;
                         s.w *= sx;
                         s.h *= sy;
-                        if s.w <= 0.0 {
-                            s.w = f.img_w;
-                        }
-                        if s.h <= 0.0 {
-                            s.h = f.img_h;
+                        // A connector legitimately has a zero dimension (an axis-aligned
+                        // line); only non-line shapes fall back to the group extent.
+                        if !s.is_line {
+                            if s.w <= 0.0 {
+                                s.w = f.img_w;
+                            }
+                            if s.h <= 0.0 {
+                                s.h = f.img_h;
+                            }
                         }
                         f.shapes.push(s);
                     }
