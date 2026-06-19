@@ -2117,10 +2117,12 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
             clip: None,
         });
     }
-    // Grouped shapes carry page-absolute coords (from the group xfrm); a lone shape
-    // sits at the anchor (its own a:off is canvas-relative / often stale, so ignore it).
+    // Grouped shapes carry group coords; their x layout is meaningful but their
+    // absolute y is the group's canvas position — re-anchor the whole group so its
+    // top sits at the anchor paragraph (fy), matching the reserved body space.
+    let gmin_y = if fl.grouped { fl.shapes.iter().map(|s| s.y).fold(f32::MAX, f32::min) } else { 0.0 };
     for sh in &fl.shapes {
-        let (sx, sy) = if fl.grouped { (sh.x, sh.y) } else { (fx, fy) };
+        let (sx, sy) = if fl.grouped { (sh.x, sh.y - gmin_y + fy) } else { (fx, fy) };
         if sh.is_line {
             if let Some((c, w)) = sh.outline {
                 let mut p = dv_ir::PathData::new();
