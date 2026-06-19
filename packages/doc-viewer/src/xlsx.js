@@ -26,7 +26,7 @@ export async function renderXlsxInto(container, bytes, opts = {}) {
   return new XlsxViewer(container, book, opts);
 }
 
-class XlsxViewer {
+export class XlsxViewer {
   constructor(container, book, opts) {
     this.book = book;
     this.names = book.sheetNames();

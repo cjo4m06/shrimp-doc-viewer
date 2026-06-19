@@ -77,6 +77,15 @@ export function sniffFormat(bytes) {
   if (bytes.length >= 4 && bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0) {
     return "ole"; // legacy .doc/.xls/.ppt compound file
   }
+  // No binary magic: if it's plausibly text (no NULs, few control bytes), treat
+  // it as delimited text (CSV / TSV / semicolon).
+  const sample = bytes.subarray(0, 4096);
+  let ctrl = 0;
+  for (const b of sample) {
+    if (b === 0) return "unknown";
+    if (b < 9 || (b > 13 && b < 32)) ctrl++;
+  }
+  if (sample.length > 0 && ctrl < sample.length * 0.05) return "csv";
   return "unknown";
 }
 
@@ -94,10 +103,14 @@ export function sniffFormat(bytes) {
  */
 export async function mount(target, source, options = {}) {
   const bytes = await toBytes(source);
-  const format = sniffFormat(bytes);
+  const format = options.format || sniffFormat(bytes);
   if (format === "pdf") {
     const { renderPdfInto } = await import("./pdf.js");
     return renderPdfInto(target, bytes, options);
+  }
+  if (format === "csv") {
+    const { renderCsvInto } = await import("./csv.js");
+    return renderCsvInto(target, bytes, options);
   }
   if (format === "ooxml") {
     const sub = sniffOoxml(bytes);
@@ -116,7 +129,7 @@ export async function mount(target, source, options = {}) {
     throw new Error(`doc-viewer.mount(): detected "${sub}" — PDF, XLSX, DOCX and PPTX are wired.`);
   }
   throw new Error(
-    `doc-viewer.mount(): detected "${format}" — supported so far: PDF, XLSX. ` +
+    `doc-viewer.mount(): detected "${format}" — supported: PDF, XLSX, DOCX, PPTX, CSV. ` +
       `Legacy binary (.doc/.xls/.ppt) is out of scope.`
   );
 }

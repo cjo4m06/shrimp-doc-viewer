@@ -144,6 +144,17 @@ impl XlsxBook {
         XlsxBook { bytes, font, names, opts: dv_xlsx::Options::default(), cache: HashMap::new() }
     }
 
+    /// Build a single-sheet grid book from CSV / TSV / semicolon-delimited bytes,
+    /// reusing the xlsx viewport renderer + viewer.
+    #[wasm_bindgen(js_name = fromCsv)]
+    pub fn from_csv(bytes: Vec<u8>, font: Vec<u8>) -> XlsxBook {
+        let opts = dv_xlsx::Options::default();
+        let sheet = dv_xlsx::Sheet::from_csv(&bytes, &opts);
+        let mut cache = HashMap::new();
+        cache.insert(0usize, sheet);
+        XlsxBook { bytes: Vec::new(), font, names: vec!["CSV".to_string()], opts, cache }
+    }
+
     #[wasm_bindgen(js_name = sheetNames)]
     pub fn sheet_names(&self) -> Vec<String> {
         self.names.clone()

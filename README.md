@@ -1,8 +1,8 @@
 # doc-viewer
 
 A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Word
-/ Excel / PowerPoint). The rendering core is written in **Rust** and compiled to
-**WebAssembly**; it is shipped as a **pure-JS npm library** (`await init()` →
+/ Excel / PowerPoint / CSV). The rendering core is written in **Rust** and compiled
+to **WebAssembly**; it is shipped as a **pure-JS npm library** (`await init()` →
 `mount(...)`). No server, no editing, no plugins to install in the page.
 
 > Status (verified in-browser):
@@ -10,19 +10,25 @@ A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Wo
 >   Web Worker, virtualized + zoomable viewer.
 > - **XLSX — complete.** Self-written Rust grid: widths/heights/merges, styles,
 >   number formats, **sheet tabs + viewport virtualization + frozen headers + zoom**.
+> - **CSV — complete.** RFC-4180 parser (quoted fields, embedded delimiters/newlines,
+>   `""` escapes; auto-detects comma / tab / semicolon) → reuses the XLSX grid viewer
+>   (virtualization + zoom; numbers right-align, columns auto-size).
 > - **DOCX — complete (viewer-grade).** Self-written flow layout: **paginated,
 >   virtualized, zoomable** viewer; styles.xml inheritance; lists/numbering;
->   **tables** (borders/shading/gridSpan/vMerge/vAlign); **headers/footers**
->   (titlePg); rich runs (bold/italic/underline/strike/super-subscript/highlight/
->   colour); paragraph spacing, tabs, breaks, borders, shading; inline images;
->   CJK+Latin wrapping. Verified against a real 49-page manual.
-> - **PPTX — near-complete.** Self-written DrawingML: positioned text boxes, **preset
->   shape geometry + custom geometry + outlines**, solid fills, **raster images**,
->   run formatting, slide navigation. *Remaining: theme/master colour inheritance,
->   tables.*
+>   **tables** (borders/shading/gridSpan/**true vMerge spanning**/vAlign); **headers/
+>   footers** (titlePg, running logo + separator rules); rich runs (bold/italic/
+>   underline/strike/super-subscript/highlight/colour); paragraph spacing, tabs,
+>   **explicit + keepLines pagination**, **justify**, borders, shading; inline images;
+>   **floating drawings** (anchored images, rounded callouts with pointer tails,
+>   straight + custGeom-curve connectors with arrowheads); **multi-font** (see below);
+>   CJK+Latin wrapping. Verified against a real 56-page manual.
+> - **PPTX — near-complete.** Self-written DrawingML: theme/master/layout colour
+>   inheritance, positioned text boxes, **preset + custom geometry + outlines**,
+>   solid fills, **raster images**, run formatting, **multi-font**, slide navigation.
+>   *Remaining: tables (`a:tbl`).*
 >
-> All three working formats render Latin **and 繁體中文** through one shared geba
-> (display-list IR + skrifa/rustybuzz text stack + tiny-skia raster).
+> All formats render Latin **and 繁體中文** through one shared geba (display-list IR
+> + skrifa/rustybuzz text stack + tiny-skia raster).
 
 ## Why this shape (the honest tradeoff)
 
@@ -36,6 +42,7 @@ small payload · responsiveness (即時).
 | --- | --- | --- |
 | **PDF** | Embed **PDFium-WASM** (BSD, Chrome's engine — healthiest possible, ~few MB, ms-fast, mature CJK fallback) | **High** |
 | **XLSX / DOCX / PPTX** | **Own Rust renderers** over healthy parsers (`calamine`/`quick-xml`/`zip`); no healthy render lib exists, so we write it | 80–90% on typical docs (never pixel-parity with Office) |
+| **CSV** | **Own Rust parser** (RFC 4180) reusing the XLSX grid renderer | **High** |
 | Legacy `.doc/.xls/.ppt`, MS-parity | Only LibreOffice-WASM delivers it (~250MB, slow boot) — **dropped** on size/speed; defer or server-side convert | — |
 
 The **shared geba is the real asset**: every format lowers into one display-list and
@@ -46,16 +53,20 @@ is painted by one backend, so the text/font/raster stack is built once and reuse
 ```
 crates/
   dv-ir       backend-agnostic display-list IR (paths, glyph runs, paint) — no deps
-  dv-text     text/font stack: shaping (rustybuzz, behind an abstraction) + outlines (skrifa)
+  dv-text     text/font stack: shaping (rustybuzz) + outlines (skrifa) + multi-font selection
   dv-render   tiny-skia CPU raster backend: DisplayList -> straight RGBA
+  dv-image    PNG/JPEG decode -> straight RGBA
+  dv-xlsx     XLSX grid model + viewport renderer (also powers CSV via Sheet::from_csv)
+  dv-docx     DOCX flow layout + pagination
+  dv-pptx     PPTX DrawingML engine
   dv-wasm     wasm-bindgen bindings -> the WASM core
 packages/
   doc-viewer  the npm package: pure-JS API (init/mount) + generated wasm glue
 examples/
-  browser     M1 demo page (renders 繁體中文 through the WASM core)
+  browser     per-format demo pages (render 繁體中文 through the WASM core)
 ```
 
-Frontends (PDF/DOCX/XLSX/PPTX) lower into `dv-ir::DisplayList`; the backend only
+Frontends (PDF/DOCX/XLSX/PPTX/CSV) lower into `dv-ir::DisplayList`; the backend only
 paints. Text is represented as **pre-positioned glyph runs** — layout/shaping live in
 the frontend, the backend rasterizes outlines. tiny-skia is the mandatory CPU
 baseline (works in every browser/Worker, no WebGPU dependency); a `vello`/WebGPU
@@ -70,6 +81,17 @@ backend can slot in later behind a capability check.
   5–20 MB (larger than the core itself); it is fetched/subset and browser-cached.
 - Shaping is isolated in `dv-text::shape` (M1: `rustybuzz`) so migrating to
   `harfrust` later is a one-function change.
+- **Multi-font selection** (`dv_text::Fonts`, shared by DOCX + PPTX): each run names
+  font families (`w:rFonts` / `a:latin`/`a:ea`/`a:cs`); per character we pick the
+  declared face if it covers the glyph (coverage precomputed per font), else a
+  script default (CJK / Latin / symbol), else any loaded font that covers it — so a
+  font that lacks a glyph never shows `.notdef`. Fonts come from three sources, in
+  priority: **embedded in the file** (DOCX `word/fonts/*`, de-obfuscating `.odttf`
+  with the `w:fontKey` GUID), **caller-provided** via `mount({ fonts: { … } })`, and
+  the **default** fallback. *Limit:* proprietary system faces (標楷體, MingLiU…) can't
+  be bundled (licensing) and the document only declares them — supply them through
+  `fonts`. *Limit:* PowerPoint-embedded fonts are MicroType-Express-compressed EOT
+  and are not loadable, so PPTX relies on the caller map + script fallback.
 
 ## Build & run
 
@@ -107,16 +129,29 @@ await renderToCanvas(canvas, {                 // M1 geba demo (Rust/tiny-skia t
   size: 64,
 });
 
-// M2: render a PDF (PDFium-WASM) into a container. PDF/OOXML/OLE are sniffed by
-// magic bytes; only PDF is wired so far.
-const viewer = await mount(document.getElementById("doc"), pdfBytesOrBlobOrUrl, {
-  pdfiumWasmUrl: "/path/to/pdfium.wasm",        // optional; defaults to embedpdf CDN
-  cjkFallbackFontUrl: "/fonts/NotoSansTC.ttf",  // so non-embedded zh-TW PDFs render
+// mount() auto-detects the format (PDF / OOXML docx·xlsx·pptx / CSV) from the
+// bytes and routes to the right frontend. Pass options once; each frontend uses
+// what it needs.
+const viewer = await mount(document.getElementById("doc"), bytesOrBlobOrUrl, {
+  pdfiumWasmUrl: "/path/to/pdfium.wasm",        // PDF: optional; defaults to embedpdf CDN
+  cjkFallbackFontUrl: "/fonts/NotoSansTC.ttf",  // PDF: so non-embedded zh-TW PDFs render
+  fontUrl: "/fonts/NotoSansTC.ttf",             // DOCX/XLSX/PPTX/CSV: default/fallback face
+  fonts: {                                       // DOCX/PPTX: supply faces the file only declares
+    "標楷體": "/fonts/BiauKai.ttf",               //   value: URL | Uint8Array | ArrayBuffer
+  },
+  // format: "csv",                              // optional: force a format instead of sniffing
 });
 console.log(viewer.pageCount);
 viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-wheel works too
 // viewer.destroy() when done (PDFium has no GC)
 ```
+
+> **Fonts for self-rendered formats.** DOCX/XLSX/PPTX/CSV are painted by our own
+> glyph renderer, so they need at least `fontUrl` (a CJK-capable face, e.g. Noto
+> Sans TC). A document declares font families but usually doesn't embed proprietary
+> ones (標楷體, MingLiU…); pass those via `fonts` to render them, otherwise text
+> falls back to `fontUrl` per script. Embedded fonts in the file (DOCX `.odttf`) are
+> loaded automatically.
 
 > **繁中 in PDF — handled.** Pass `cjkFallbackFontUrl` (a Noto Sans/Serif CJK TC
 > font) and `mount()` installs it into PDFium via `FPDF_SetSystemFontInfo`, so PDFs
@@ -176,8 +211,19 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
     paragraph borders + shading.
   - **M4.8 ✅** headers/footers (sectPr references + titlePg first-page), running
     on every page; verified against a real 49-page manual (cover matches).
-  - *Remaining DOCX long tail: anchored-image exact positioning, text boxes
-    (w:txbxContent), tab dot-leaders, true per-font substitution.*
+  - **M4.9 ✅ — high-fidelity pass** (verified against a real 56-page manual, audited
+    parameter-by-parameter): explicit `w:br`/`pageBreakBefore` + `keepLines`
+    pagination; `w:jc` justify; right/first-line indent; true `vMerge` vertical
+    spanning; running-header logo + separator rules; **floating drawings** —
+    anchored images sized/positioned within groups, rounded `wedge*Callout` bodies
+    with pointer tails, straight + `custGeom` cubic-bézier connectors with arrowheads,
+    text-wrap reservation; paragraph-mark vs paragraph-background `w:shd`.
+  - **M4.10 ✅ — multi-font.** `w:rFonts` per-run/per-glyph selection via
+    `dv_text::Fonts`; loads fonts embedded in the file (de-obfuscating `.odttf`);
+    caller font map (`mount({ fonts })`); script fallback so missing glyphs never
+    render `.notdef`. Verified: mapping 標楷體→a CJK face switches that run's glyphs.
+  - *Remaining DOCX long tail: tab dot-leaders, pixel-exact float anchor origins,
+    bundling a kai-style free face for 標楷體 lookalike substitution.*
 - **M5 — PPTX viewer (self-written DrawingML).**
   - **M5.1 ✅** positioned text boxes + solid-fill rects, run formatting, slide nav (`PptxDeck`/`PptxViewer`).
   - **M5.2 ✅** raster images (`p:pic` → blip → media → decode → Image).
@@ -186,7 +232,14 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
     lumMod/lumOff/shade/tint; slide→layout→master→theme chain; master/layout
     background decoration + bg colour; placeholder text-style cascade. Verified
     against a real 11-slide deck (matches the reference render).
-  - **M5.5 — tables (`a:tbl`). NOT done** — port of the DOCX table layout to EMU/DrawingML.
+  - **M5.5 ✅ — multi-font.** Same `dv_text::Fonts` engine: `a:latin`/`a:ea`/`a:cs`
+    per-run selection + caller font map (`mount({ fonts })`) + script fallback.
+    (PowerPoint-embedded fonts are MicroType-Express EOT — not loadable.)
+  - **M5.6 — tables (`a:tbl`). NOT done** — port of the DOCX table layout to EMU/DrawingML.
+- **M6 — CSV ✅.** RFC-4180 parser in `dv-xlsx` (`Sheet::from_csv`: quoted fields,
+  embedded delimiters/newlines, `""` escapes, comma/tab/semicolon auto-detect; numbers
+  right-align, columns auto-size) reusing the XLSX viewport renderer + viewer. `mount()`
+  sniffs non-binary text → CSV (or force with `{ format: "csv" }`).
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 

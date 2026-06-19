@@ -84,6 +84,59 @@ pub fn sheet_names(bytes: &[u8]) -> Vec<String> {
     }
 }
 
+/// Parse delimited text (CSV / TSV / semicolon) per RFC 4180: the delimiter is
+/// auto-detected from the first non-empty line; quoted fields may contain the
+/// delimiter, newlines and `""`-escaped quotes; CRLF and LF both end a record.
+fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    if text.starts_with('\u{feff}') {
+        text.remove(0); // strip UTF-8 BOM
+    }
+    let first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let delim = [',', '\t', ';']
+        .into_iter()
+        .filter(|&d| first_line.contains(d))
+        .max_by_key(|&d| first_line.matches(d).count())
+        .unwrap_or(',');
+
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if quoted {
+            if c == '"' {
+                if it.peek() == Some(&'"') {
+                    field.push('"');
+                    it.next();
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field.push(c);
+            }
+        } else if c == '"' {
+            quoted = true;
+        } else if c == delim {
+            row.push(std::mem::take(&mut field));
+        } else if c == '\n' || c == '\r' {
+            if c == '\r' && it.peek() == Some(&'\n') {
+                it.next();
+            }
+            row.push(std::mem::take(&mut field));
+            rows.push(std::mem::take(&mut row));
+        } else {
+            field.push(c);
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    rows
+}
+
 impl Sheet {
     /// Parse one sheet into an owned model.
     pub fn parse(bytes: &[u8], sheet_index: usize, opts: &Options) -> Sheet {
@@ -136,6 +189,63 @@ impl Sheet {
             xfs: parsed.styles.xfs,
             anchor_span,
             covered,
+            col_x,
+            row_y,
+            n_rows,
+            n_cols,
+            header_w: opts.header_w,
+            header_h: opts.row_height,
+            font_size: opts.font_size,
+        }
+    }
+
+    /// Build a grid sheet from CSV / TSV / semicolon-delimited bytes. No styles or
+    /// merges; cells that parse as numbers right-align, columns auto-size to content.
+    /// Reuses the same viewport renderer as xlsx.
+    pub fn from_csv(bytes: &[u8], opts: &Options) -> Sheet {
+        let rows = parse_delimited(bytes);
+        let n_rows = rows.len().clamp(1, opts.max_rows) as u32;
+        let n_cols = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, opts.max_cols) as u32;
+
+        let mut values = HashMap::new();
+        let mut col_chars = vec![0usize; n_cols as usize];
+        for (r, row) in rows.iter().enumerate().take(n_rows as usize) {
+            for (c, cell) in row.iter().enumerate().take(n_cols as usize) {
+                let t = cell.trim();
+                col_chars[c] = col_chars[c].max(t.chars().count());
+                if t.is_empty() {
+                    continue;
+                }
+                // Treat as a number only when it cleanly parses and isn't an
+                // identifier-like leading-zero integer (e.g. "007", phone numbers).
+                let numeric = t.parse::<f64>().ok().filter(|_| t == "0" || t.contains('.') || !t.starts_with('0'));
+                let v = match numeric {
+                    Some(n) => CellVal::Num(n),
+                    None => CellVal::Text(t.to_string()),
+                };
+                values.insert((r as u32, c as u32), v);
+            }
+        }
+
+        let mut col_x = Vec::with_capacity(n_cols as usize + 1);
+        col_x.push(0.0);
+        for c in 0..n_cols as usize {
+            let w = (col_chars[c] as f32 * opts.font_size * 0.62 + 12.0).clamp(opts.col_width, 480.0);
+            col_x.push(col_x[c] + w);
+        }
+        let mut row_y = Vec::with_capacity(n_rows as usize + 1);
+        row_y.push(0.0);
+        for r in 0..n_rows as usize {
+            row_y.push(row_y[r] + opts.row_height);
+        }
+
+        Sheet {
+            name: "CSV".to_string(),
+            values,
+            cell_xf: HashMap::new(),
+            xfs: Vec::new(),
+            anchor_span: HashMap::new(),
+            covered: HashSet::new(),
             col_x,
             row_y,
             n_rows,
