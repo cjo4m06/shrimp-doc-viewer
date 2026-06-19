@@ -1,7 +1,7 @@
 // OpenDocument frontend. ODT/ODP lower into the rich-text flow (DOCX viewer, with
 // worker rasterization); ODS reuses the XLSX grid viewer. Subtype in `opts.odfKind`.
 
-import { init } from "./index.js";
+import { init, DEFAULT_FONT_URL } from "./index.js";
 import { XlsxBook } from "../wasm/dv_wasm.js";
 import { DocxViewer, resolveFontMap } from "./docx.js";
 import { XlsxViewer } from "./xlsx.js";
@@ -14,8 +14,7 @@ import { WorkerDoc } from "./worker-doc.js";
  */
 export async function renderOdfInto(container, bytes, opts = {}) {
   await init();
-  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
-  if (!fontUrl) throw new Error("renderOdfInto: provide opts.fontUrl (a CJK-capable font).");
+  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl || DEFAULT_FONT_URL;
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
 
   if (opts.odfKind === "ods") {

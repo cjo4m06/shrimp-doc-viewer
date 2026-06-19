@@ -1,12 +1,20 @@
 // Public JS API for doc-viewer — a pure-JS surface over the Rust/WASM core.
 //
 // The WASM module is loaded lazily and exactly once. Fonts and the .wasm binary
-// are separate, cacheable assets (never bundled into JS), matching the
-// lazy-load architecture the engine is built around.
+// are separate, cacheable assets (fetched at runtime, never inlined into JS) — the
+// package ships a default font that's resolved by URL and loaded on first use.
 
 import initWasm, { render_text_demo, version as wasmVersion } from "../wasm/dv_wasm.js";
 
 let _ready = null;
+
+/**
+ * The bundled default font (Noto Sans TC, SIL OFL 1.1 — free for commercial use).
+ * Used as the fallback when the caller passes no `fontUrl`, so `mount()` works with
+ * zero configuration. Override per call with `fontUrl`, or map specific families
+ * with `fonts`. Resolved relative to this module so bundlers copy it automatically.
+ */
+export const DEFAULT_FONT_URL = new URL("../fonts/NotoSansTC-VF.ttf", import.meta.url).href;
 
 /**
  * Load & instantiate the WASM core (idempotent).

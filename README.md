@@ -10,13 +10,13 @@ text · RTF · OpenDocument (.odt/.ods/.odp) · images** with one call:
 ```js
 import { mount } from "doc-viewer";
 
-const viewer = await mount(document.getElementById("doc"), fileBytesOrBlobOrUrl, {
-  fontUrl: "/fonts/NotoSansTC.ttf", // a CJK-capable font for the self-rendered formats
-});
+const viewer = await mount(document.getElementById("doc"), fileBytesOrBlobOrUrl);
 viewer.zoomIn();
 ```
 
-`mount()` sniffs the format from the bytes and renders it — same call for every type.
+`mount()` sniffs the format from the bytes and renders it — same call for every
+type. **No font configuration required**: a free-for-commercial-use CJK font ships
+with the package and is used by default (override it any time — see [Fonts](#fonts)).
 
 ---
 
@@ -43,13 +43,14 @@ Worker**, so zooming and scrolling stay at 60 fps.
 npm install doc-viewer
 ```
 
-The WebAssembly core ships inside the package. You provide:
-
-- a **font** for the self-rendered formats (anything except PDF) — see [Fonts](#fonts);
-- optionally a **PDFium wasm URL** for PDF (defaults to the embedpdf CDN).
+The package is self-contained — the WebAssembly core **and** a default CJK font
+(Noto Sans TC, SIL OFL 1.1) ship inside it, so `mount()` works with zero config.
+The font is the bulk of the install size (~12 MB); it is fetched lazily (only when a
+non-PDF format is first opened) and you can [swap it for a smaller/self-hosted
+one](#fonts). PDF optionally takes a **PDFium wasm URL** (defaults to the embedpdf CDN).
 
 ESM only. Modern browsers (Chrome/Edge/Firefox/Safari). No bundler config required;
-the wasm and the render worker are loaded via `import.meta.url`.
+the wasm, the render worker and the font are all resolved via `import.meta.url`.
 
 ## Quick start
 
@@ -59,8 +60,9 @@ import { init, mount } from "doc-viewer";
 await init();                       // optional: warm the wasm core up front
 
 const viewer = await mount(target, source, {
-  fontUrl: "/fonts/NotoSansTC.ttf", // DOCX/XLSX/PPTX/CSV/MD/RTF/ODF need a font
-  cjkFallbackFontUrl: "/fonts/NotoSansTC.ttf", // PDF: render non-embedded CJK
+  // all optional:
+  fontUrl: "/fonts/MyFont.ttf",     // override the bundled default font
+  cjkFallbackFontUrl: "/fonts/NotoSansTC.ttf", // PDF only: render non-embedded CJK
 });
 
 console.log(viewer.pageCount);      // (paged formats)
@@ -76,29 +78,39 @@ viewer.destroy();                   // free resources when you remove it
 ## Fonts
 
 PDF carries its own fonts; **every other format is painted by our own glyph
-renderer**, so it needs at least one font:
+renderer**, which needs a real font file (a document only declares font *names*, not
+glyph data). The package **bundles Noto Sans TC** (SIL OFL 1.1, commercial-use OK) and
+uses it by default, so you don't have to configure anything.
 
-```js
-mount(el, bytes, { fontUrl: "/fonts/NotoSansTC.ttf" });
-```
+Each glyph is resolved through a layered lookup:
 
-A document *declares* font families but usually does **not embed** proprietary ones
-(標楷體, MingLiU, Calibri…). Supply those with a **font map** and the matching runs
-render in them; anything unmapped falls back per script (CJK / Latin / symbol):
+1. **fonts embedded in the file** (e.g. a DOCX `.odttf`) — used automatically;
+2. **your font map** — families you supply explicitly (below);
+3. matching font by name, then a per-script fallback (CJK / Latin / symbol);
+4. the **bundled default** font.
+
+A document usually *declares* proprietary fonts (標楷體, MingLiU, Calibri…) without
+embedding them. Provide those and the matching runs render in them:
 
 ```js
 mount(el, bytes, {
-  fontUrl: "/fonts/NotoSansTC.ttf",          // default / fallback
   fonts: {
-    "標楷體": "/fonts/BiauKai.ttf",            // value: URL | Uint8Array | ArrayBuffer
+    "標楷體": "/fonts/BiauKai.ttf",   // value: URL | Uint8Array | ArrayBuffer
     "Calibri": "/fonts/Carlito.ttf",
   },
 });
 ```
 
-Fonts that **are** embedded in the file (e.g. a DOCX `.odttf`) load automatically.
-For PDF, pass `cjkFallbackFontUrl` so non-embedded CJK PDFs render instead of going
-blank.
+To replace the default fallback (e.g. a smaller subset, or to drop the ~12 MB font
+from your bundle and self-host it), pass `fontUrl`:
+
+```js
+mount(el, bytes, { fontUrl: "/fonts/my-subset.ttf" });
+```
+
+For PDF, pass `cjkFallbackFontUrl` so a PDF that *doesn't* embed its CJK fonts renders
+instead of going blank (PDF doesn't use the bundled default, to avoid loading a font
+the typical embedded-font PDF doesn't need).
 
 ## API
 
@@ -117,9 +129,9 @@ Detects the format and renders it. Common options:
 
 | option | applies to | description |
 | --- | --- | --- |
-| `fontUrl` | DOCX·XLSX·PPTX·CSV·MD·RTF·ODF | default/fallback font (CJK-capable) |
-| `fonts` | DOCX·PPTX·MD·RTF·ODT·ODP | `{ family: URL \| Uint8Array \| ArrayBuffer }` map |
-| `cjkFallbackFontUrl` | PDF | font for non-embedded CJK PDFs |
+| `fontUrl` | DOCX·XLSX·PPTX·CSV·MD·RTF·ODF | override the bundled default fallback font (optional) |
+| `fonts` | DOCX·PPTX·MD·RTF·ODT·ODP | `{ family: URL \| Uint8Array \| ArrayBuffer }` map of declared families |
+| `cjkFallbackFontUrl` | PDF | font for non-embedded CJK PDFs (optional) |
 | `pdfiumWasmUrl` | PDF | PDFium wasm location (defaults to CDN) |
 | `zoom` | most | initial zoom (default fit/1) |
 | `format` | all | force a format, skip sniffing (`"pdf"`, `"docx"`, `"csv"`, `"markdown"`, …) |
@@ -160,7 +172,8 @@ it when you remove the element). Beyond that the surface depends on the format:
 **Out of scope:** legacy binary `.doc/.xls/.ppt` (OLE) — convert them server-side
 to OOXML/PDF first. The self-written renderers target **viewer-grade fidelity**
 (typical documents render faithfully) rather than pixel-parity with Office; a
-proprietary system font that the file only *declares* must be supplied via `fonts`.
+proprietary system font the file only *declares* renders in the bundled fallback
+unless you supply it via `fonts`.
 
 ## How it works
 

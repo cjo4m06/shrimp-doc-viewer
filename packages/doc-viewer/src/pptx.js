@@ -1,8 +1,9 @@
 // PPTX frontend — our own Rust DrawingML renderer draws one slide at a time
 // through the shared geba; JS provides slide navigation and fit-to-width sizing.
 
-import { init } from "./index.js";
+import { init, DEFAULT_FONT_URL } from "./index.js";
 import { PptxDeck } from "../wasm/dv_wasm.js";
+import { resolveFontMap } from "./docx.js";
 
 /**
  * Mount a PPTX slide viewer into `container`.
@@ -16,19 +17,9 @@ import { PptxDeck } from "../wasm/dv_wasm.js";
  */
 export async function renderPptxInto(container, bytes, opts = {}) {
   await init();
-  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
-  if (!fontUrl) {
-    throw new Error("renderPptxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
-  }
+  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl || DEFAULT_FONT_URL;
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
-  const extra = [];
-  for (const [name, src] of Object.entries(opts.fonts || {})) {
-    let u8;
-    if (src instanceof Uint8Array) u8 = src;
-    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
-    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
-    extra.push([name, u8]);
-  }
+  const extra = await resolveFontMap(opts.fonts);
   const deck = new PptxDeck(bytes, fontBytes, extra);
   return new PptxViewer(container, deck, opts);
 }

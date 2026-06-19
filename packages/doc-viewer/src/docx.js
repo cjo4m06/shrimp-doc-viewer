@@ -2,7 +2,7 @@
 // engine paginates the document; the WASM DocxDoc renders one page at a time, and
 // JS virtualizes pages (render only near the viewport, free the rest) + zoom.
 
-import { init } from "./index.js";
+import { init, DEFAULT_FONT_URL } from "./index.js";
 import { WorkerDoc } from "./worker-doc.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -32,10 +32,7 @@ export async function resolveFontMap(fonts) {
  */
 export async function renderDocxInto(container, bytes, opts = {}) {
   await init();
-  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
-  if (!fontUrl) {
-    throw new Error("renderDocxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
-  }
+  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl || DEFAULT_FONT_URL;
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
   const extra = await resolveFontMap(opts.fonts);
   const doc = await WorkerDoc.open("docx", bytes, fontBytes, extra);

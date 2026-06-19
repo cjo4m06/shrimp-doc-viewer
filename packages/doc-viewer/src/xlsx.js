@@ -3,7 +3,7 @@
 // once and renders only the cells in the current scroll window (with frozen
 // column/row headers); JS drives scroll, zoom and sheet tabs.
 
-import { init } from "./index.js";
+import { init, DEFAULT_FONT_URL } from "./index.js";
 import { XlsxBook } from "../wasm/dv_wasm.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -17,10 +17,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
  */
 export async function renderXlsxInto(container, bytes, opts = {}) {
   await init();
-  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
-  if (!fontUrl) {
-    throw new Error("renderXlsxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
-  }
+  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl || DEFAULT_FONT_URL;
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
   const book = new XlsxBook(bytes, fontBytes);
   return new XlsxViewer(container, book, opts);

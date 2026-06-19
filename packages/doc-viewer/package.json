@@ -14,7 +14,8 @@
   },
   "files": [
     "src",
-    "wasm"
+    "wasm",
+    "fonts"
   ],
   "sideEffects": [
     "./wasm/dv_wasm.js"
