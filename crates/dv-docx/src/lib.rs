@@ -249,6 +249,10 @@ struct DShape {
     is_line: bool, // connector -> stroke a diagonal
     flip_v: bool,  // xfrm flipV -> diagonal runs bottom-left to top-right
     flip_h: bool,
+    arrow_tail: bool, // arrowhead at the line end / start
+    arrow_head: bool,
+    image_rid: Option<String>, // a picture inside the group (drawn at this shape's box)
+    image: Option<dv_image::DecodedImage>,
     blocks: Vec<Block>,
     // text laid out at layout time (so rendering needs no font): glyphs + height
     glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,
@@ -664,7 +668,12 @@ fn parse_document(xml: &str) -> Document {
                         pos_target = if pos_target >= 20 { 2 } else { 1 };
                     }
                     b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                    }
+                    // A picture INSIDE a group: treat it as a shape drawn at its own box
+                    // (so it isn't stretched to the whole group's extent).
+                    b"pic:pic" if cur_float.is_some() && gstack.len() > 1 && cur_dshape.is_none() => {
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     b"wpg:grpSpPr" if cur_float.is_some() => {
                         in_grpspr = !is_empty;
@@ -716,6 +725,20 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"a:ln" if cur_float.is_some() => in_dln = !is_empty,
+                    b"a:tailEnd" if cur_float.is_some() && in_dln => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            if matches!(get_attr(&e, b"type").as_deref(), Some(t) if t != "none") {
+                                s.arrow_tail = true;
+                            }
+                        }
+                    }
+                    b"a:headEnd" if cur_float.is_some() && in_dln => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            if matches!(get_attr(&e, b"type").as_deref(), Some(t) if t != "none") {
+                                s.arrow_head = true;
+                            }
+                        }
+                    }
                     b"a:noFill" if cur_float.is_some() => {
                         if in_dln {
                             if let Some(s) = cur_dshape.as_mut() {
@@ -735,8 +758,12 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"a:blip" if cur_float.is_some() => {
-                        if let Some(f) = cur_float.as_mut() {
-                            if let Some(rid) = get_attr(&e, b"r:embed") {
+                        if let Some(rid) = get_attr(&e, b"r:embed") {
+                            // A pic inside a group becomes an image shape; a lone
+                            // anchored picture is the float's own image.
+                            if let Some(s) = cur_dshape.as_mut() {
+                                s.image_rid = Some(rid);
+                            } else if let Some(f) = cur_float.as_mut() {
                                 f.image_rid = Some(rid);
                             }
                         }
@@ -974,6 +1001,18 @@ fn parse_document(xml: &str) -> Document {
                             s.h = f.img_h;
                         }
                         f.shapes.push(s);
+                    }
+                }
+                b"pic:pic" if cur_dshape.as_ref().map(|s| s.image_rid.is_some()).unwrap_or(false) => {
+                    if let (Some(_f), Some(mut s)) = (cur_float.as_mut(), cur_dshape.take()) {
+                        let (sx, sy, tx, ty) = *gstack.last().unwrap();
+                        s.x = s.x * sx + tx;
+                        s.y = s.y * sy + ty;
+                        s.w *= sx;
+                        s.h *= sy;
+                        if s.w > 0.0 && s.h > 0.0 {
+                            cur_float.as_mut().unwrap().shapes.push(s);
+                        }
                     }
                 }
                 b"wp:anchor" => {
@@ -2159,21 +2198,55 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
                 p.move_to(x0 * scale, y0 * scale);
                 p.line_to(x1 * scale, y1 * scale);
                 dl.push(Command::StrokePath { path: p, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+                // arrowheads (filled triangles) at the connector's ends
+                let head = (8.0 + w * 2.0) * scale;
+                if sh.arrow_tail {
+                    dl.push(arrow_head_tri(x1 * scale, y1 * scale, x0 * scale, y0 * scale, head, c));
+                }
+                if sh.arrow_head {
+                    dl.push(arrow_head_tri(x0 * scale, y0 * scale, x1 * scale, y1 * scale, head, c));
+                }
             }
             continue;
         }
         if sh.w <= 0.0 || sh.h <= 0.0 {
             continue;
         }
-        if let Some(c) = sh.fill {
-            dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, sh.h * scale, c));
+        // A picture embedded in the group: paint it at its own box.
+        if let Some(img) = &sh.image {
+            dl.push(Command::Image {
+                rgba: img.rgba.clone(),
+                src_w: img.width,
+                src_h: img.height,
+                x: sx * scale,
+                y: sy * scale,
+                w: sh.w * scale,
+                h: sh.h * scale,
+                clip: None,
+            });
+            continue;
         }
-        if let Some((c, w)) = sh.outline {
-            let t = (w * scale).max(1.0);
-            dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, t, c));
-            dl.push(fill_box(sx * scale, (sy + sh.h) * scale - t, sh.w * scale, t, c));
-            dl.push(fill_box(sx * scale, sy * scale, t, sh.h * scale, c));
-            dl.push(fill_box((sx + sh.w) * scale - t, sy * scale, t, sh.h * scale, c));
+        if sh.rounded {
+            // Callout / roundRect: one rounded path, filled then stroked.
+            let r = (sh.w.min(sh.h) * 0.22).min(12.0) * scale;
+            let path = round_rect_path(sx * scale, sy * scale, sh.w * scale, sh.h * scale, r);
+            if let Some(c) = sh.fill {
+                dl.push(Command::FillPath { path: path.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+            }
+            if let Some((c, w)) = sh.outline {
+                dl.push(Command::StrokePath { path, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+            }
+        } else {
+            if let Some(c) = sh.fill {
+                dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, sh.h * scale, c));
+            }
+            if let Some((c, w)) = sh.outline {
+                let t = (w * scale).max(1.0);
+                dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, t, c));
+                dl.push(fill_box(sx * scale, (sy + sh.h) * scale - t, sh.w * scale, t, c));
+                dl.push(fill_box(sx * scale, sy * scale, t, sh.h * scale, c));
+                dl.push(fill_box((sx + sh.w) * scale - t, sy * scale, t, sh.h * scale, c));
+            }
         }
         // text box content, vertically centred, with a small inset
         let pad = 4.0;
@@ -2202,6 +2275,39 @@ fn fill_box(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x, y + h);
     p.close();
     Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY }
+}
+
+/// A filled arrowhead triangle whose tip is at (tx,ty), pointing away from (fx,fy).
+fn arrow_head_tri(tx: f32, ty: f32, fx: f32, fy: f32, size: f32, color: Color) -> Command {
+    let (dx, dy) = (tx - fx, ty - fy);
+    let len = (dx * dx + dy * dy).sqrt().max(0.001);
+    let (ux, uy) = (dx / len, dy / len);
+    let (px, py) = (-uy, ux);
+    let (bx, by) = (tx - ux * size, ty - uy * size);
+    let half = size * 0.5;
+    let mut p = dv_ir::PathData::new();
+    p.move_to(tx, ty);
+    p.line_to(bx + px * half, by + py * half);
+    p.line_to(bx - px * half, by - py * half);
+    p.close();
+    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY }
+}
+
+/// Rounded-rectangle path (device coords), used for callout/roundRect shapes.
+fn round_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> dv_ir::PathData {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    let mut p = dv_ir::PathData::new();
+    p.move_to(x + r, y);
+    p.line_to(x + w - r, y);
+    p.quad_to(x + w, y, x + w, y + r);
+    p.line_to(x + w, y + h - r);
+    p.quad_to(x + w, y + h, x + w - r, y + h);
+    p.line_to(x + r, y + h);
+    p.quad_to(x, y + h, x, y + h - r);
+    p.line_to(x, y + r);
+    p.quad_to(x, y, x + r, y);
+    p.close();
+    p
 }
 
 /// Lay out and render a DOCX into a single continuous page (no pagination).
@@ -2491,6 +2597,12 @@ fn resolve_images(doc: &mut Document, bytes: &[u8], rels_name: &str) {
                         fl.img_h = img.height as f32;
                     }
                     fl.image = Some(img);
+                }
+            }
+            // pictures embedded inside a group (positioned image shapes)
+            for sh in &mut fl.shapes {
+                if let Some(rid) = sh.image_rid.clone() {
+                    sh.image = decode(&rid);
                 }
             }
         }
