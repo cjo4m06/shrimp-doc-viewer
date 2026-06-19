@@ -238,11 +238,26 @@ enum Block {
 }
 
 /// One drawable inside a floating anchor (a text box / autoshape / connector).
+/// One segment of a custGeom path, in the path's own coordinate space.
+#[derive(Clone)]
+enum PathSeg {
+    Move(f32, f32),
+    Line(f32, f32),
+    Cubic(f32, f32, f32, f32, f32, f32),
+    Quad(f32, f32, f32, f32),
+    Close,
+}
+
 struct DShape {
     x: f32, // px, relative to the float origin
     y: f32,
     w: f32,
     h: f32,
+    // freeform geometry (custGeom): segments in a [0..path_w]x[0..path_h] space,
+    // mapped into the shape's box at render time. Empty = use prst geometry.
+    path: Vec<PathSeg>,
+    path_w: f32,
+    path_h: f32,
     fill: Option<Color>,
     outline: Option<(Color, f32)>,
     rounded: bool, // roundRect / callout -> rounded corners
@@ -627,6 +642,9 @@ fn parse_document(xml: &str) -> Document {
     let mut gstack: Vec<(f32, f32, f32, f32)> = vec![base_tf];
     let mut in_grpspr = false;
     let mut g_xfrm = [0.0f32; 8];
+    // custGeom path parsing state
+    let mut cur_verb: u8 = 0; // 1=move 2=line 3=cubic 4=quad
+    let mut verb_pts: Vec<(f32, f32)> = Vec::new();
 
     loop {
         let event = reader.read_event_into(&mut buf);
@@ -671,12 +689,12 @@ fn parse_document(xml: &str) -> Document {
                         pos_target = if pos_target >= 20 { 2 } else { 1 };
                     }
                     b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, path: Vec::new(), path_w: 0.0, path_h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     // A picture INSIDE a group: treat it as a shape drawn at its own box
                     // (so it isn't stretched to the whole group's extent).
                     b"pic:pic" if cur_float.is_some() && gstack.len() > 1 && cur_dshape.is_none() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, path: Vec::new(), path_w: 0.0, path_h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     b"wpg:grpSpPr" if cur_float.is_some() => {
                         in_grpspr = !is_empty;
@@ -727,6 +745,39 @@ fn parse_document(xml: &str) -> Document {
                             s.callout = prst.contains("allout");
                             s.is_line = prst.contains("onnector") || prst == "line";
                         }
+                    }
+                    // ---- custGeom freeform paths (e.g. the curved connector lines) ----
+                    b"a:path" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            s.path_w = get_attr(&e, b"w").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                            s.path_h = get_attr(&e, b"h").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        }
+                    }
+                    b"a:moveTo" if cur_float.is_some() => {
+                        cur_verb = 1;
+                        verb_pts.clear();
+                    }
+                    b"a:lnTo" if cur_float.is_some() => {
+                        cur_verb = 2;
+                        verb_pts.clear();
+                    }
+                    b"a:cubicBezTo" if cur_float.is_some() => {
+                        cur_verb = 3;
+                        verb_pts.clear();
+                    }
+                    b"a:quadBezTo" if cur_float.is_some() => {
+                        cur_verb = 4;
+                        verb_pts.clear();
+                    }
+                    b"a:close" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            s.path.push(PathSeg::Close);
+                        }
+                    }
+                    b"a:pt" if cur_float.is_some() && cur_verb != 0 => {
+                        let x = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                        let y = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                        verb_pts.push((x, y));
                     }
                     b"a:gd" if cur_float.is_some() => {
                         // callout pointer adjustment guides (val is thousandths of a percent)
@@ -982,6 +1033,19 @@ fn parse_document(xml: &str) -> Document {
                 b"w:tcPr" => in_tcpr = false,
                 b"wp:posOffset" => pos_target = 0,
                 b"a:ln" if cur_float.is_some() => in_dln = false,
+                b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" | b"a:quadBezTo" if cur_float.is_some() => {
+                    if let Some(s) = cur_dshape.as_mut() {
+                        match (cur_verb, verb_pts.as_slice()) {
+                            (1, [(x, y)]) => s.path.push(PathSeg::Move(*x, *y)),
+                            (2, [(x, y)]) => s.path.push(PathSeg::Line(*x, *y)),
+                            (3, [(x1, y1), (x2, y2), (x, y)]) => s.path.push(PathSeg::Cubic(*x1, *y1, *x2, *y2, *x, *y)),
+                            (4, [(cx, cy), (x, y)]) => s.path.push(PathSeg::Quad(*cx, *cy, *x, *y)),
+                            _ => {}
+                        }
+                    }
+                    cur_verb = 0;
+                    verb_pts.clear();
+                }
                 b"w:txbxContent" => {
                     in_txbx = false;
                     if let Some((p, r)) = para_stack.pop() {
@@ -2196,6 +2260,35 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
     };
     for sh in &fl.shapes {
         let (sx, sy) = if fl.grouped { (sh.x - gmin_x + fx, sh.y - gmin_y + fy) } else { (fx, fy) };
+        // custGeom freeform path (e.g. the curved connector lines): map the path's
+        // own [0..path_w]x[0..path_h] space into the shape box and stroke it.
+        if !sh.path.is_empty() && sh.path_w > 0.0 && sh.path_h > 0.0 {
+            let (pw, ph) = (sh.path_w, sh.path_h);
+            let mx = |x: f32| {
+                let fx2 = if sh.flip_h { 1.0 - x / pw } else { x / pw };
+                (sx + fx2 * sh.w) * scale
+            };
+            let my = |y: f32| {
+                let fy2 = if sh.flip_v { 1.0 - y / ph } else { y / ph };
+                (sy + fy2 * sh.h) * scale
+            };
+            let mut p = dv_ir::PathData::new();
+            for seg in &sh.path {
+                match seg {
+                    PathSeg::Move(x, y) => p.move_to(mx(*x), my(*y)),
+                    PathSeg::Line(x, y) => p.line_to(mx(*x), my(*y)),
+                    PathSeg::Cubic(x1, y1, x2, y2, x, y) => p.cubic_to(mx(*x1), my(*y1), mx(*x2), my(*y2), mx(*x), my(*y)),
+                    PathSeg::Quad(cx, cy, x, y) => p.quad_to(mx(*cx), my(*cy), mx(*x), my(*y)),
+                    PathSeg::Close => p.close(),
+                }
+            }
+            let (col, w) = sh.outline.or(sh.fill.map(|f| (f, 1.0))).unwrap_or((Color { r: 0x80, g: 0x80, b: 0x80, a: 255 }, 1.0));
+            if let Some(c) = sh.fill {
+                dl.push(Command::FillPath { path: p.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+            }
+            dl.push(Command::StrokePath { path: p, paint: Paint::Solid(col), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+            continue;
+        }
         if sh.is_line {
             if let Some((c, w)) = sh.outline {
                 // A connector's bbox is the rectangle it spans. A mostly-vertical or
