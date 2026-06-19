@@ -1,9 +1,13 @@
 ---
 name: Bug report
-about: A document renders wrong, crashes, or behaves unexpectedly
+about: A bug not tied to one file — API, zoom/scroll, memory, build/install, types
 title: "[bug] "
 labels: bug
 ---
+
+<!-- If a specific FILE won't open or renders wrong, use the
+     "Unsupported format / file won't render" template instead — it asks for the
+     minimal repro file that makes those fixable. -->
 
 ## Summary
 
