@@ -1,6 +1,6 @@
-# Contributing to doc-viewer
+# Contributing to ShrimpDocViewer
 
-Thanks for your interest! doc-viewer is a **browser, viewer-only** multi-format
+Thanks for your interest! ShrimpDocViewer is a **browser, viewer-only** multi-format
 document viewer (Rust → WebAssembly core, pure-JS API). Contributions are welcome —
 this guide covers how to build, test, and propose changes.
 

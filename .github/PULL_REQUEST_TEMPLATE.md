@@ -1,4 +1,4 @@
-<!-- Thanks for contributing to doc-viewer! Keep PRs focused and explain the why. -->
+<!-- Thanks for contributing to ShrimpDocViewer! Keep PRs focused and explain the why. -->
 
 ## What & why
 

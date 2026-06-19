@@ -27,7 +27,7 @@ labels: bug
 
 ## Environment
 
-- doc-viewer version:
+- ShrimpDocViewer version:
 - Browser / OS:
 - `fontUrl` / `fonts` map used (if any):
 

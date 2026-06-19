@@ -1,5 +1,5 @@
 {
-  "name": "doc-viewer",
+  "name": "shrimp-doc-viewer",
   "version": "0.0.0",
   "description": "Browser, viewer-only, high-fidelity multi-format document viewer (PDF/Word/Excel/PPT). Rust/WASM core, pure-JS API.",
   "type": "module",

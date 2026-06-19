@@ -1,4 +1,4 @@
-// Public type surface for doc-viewer.
+// Public type surface for ShrimpDocViewer.
 
 export interface InitOptions {
   /** Override the location of the `.wasm` binary. */

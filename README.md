@@ -1,4 +1,4 @@
-# doc-viewer
+# ShrimpDocViewer
 
 > A browser, **viewer-only**, multi-format document viewer — drop bytes in, get a
 > zoomable, virtualized viewer out. Pure-JS API over a Rust → WebAssembly core. No
@@ -8,7 +8,7 @@ Open **PDF · Word (.docx) · Excel (.xlsx) · PowerPoint (.pptx) · CSV · Mark
 text · RTF · OpenDocument (.odt/.ods/.odp) · images** with one call:
 
 ```js
-import { mount } from "doc-viewer";
+import { mount } from "shrimp-doc-viewer";
 
 const viewer = await mount(document.getElementById("doc"), fileBytesOrBlobOrUrl);
 viewer.zoomIn();
@@ -40,7 +40,7 @@ Worker**, so zooming and scrolling stay at 60 fps.
 ## Install
 
 ```bash
-npm install doc-viewer
+npm install shrimp-doc-viewer
 ```
 
 The package is self-contained — the WebAssembly core **and** a default CJK font
@@ -55,7 +55,7 @@ the wasm, the render worker and the font are all resolved via `import.meta.url`.
 ## Quick start
 
 ```js
-import { init, mount } from "doc-viewer";
+import { init, mount } from "shrimp-doc-viewer";
 
 await init();                       // optional: warm the wasm core up front
 

@@ -390,7 +390,7 @@ class PdfViewer {
       this.rendered.set(i, scale);
       this.onProgress?.(this.rendered.size, this.pageCount);
     } catch (err) {
-      console.warn("doc-viewer: page", i + 1, "render failed:", err);
+      console.warn("ShrimpDocViewer: page", i + 1, "render failed:", err);
     } finally {
       if (this.inFlight.get(i) === scale) this.inFlight.delete(i);
     }
@@ -486,7 +486,7 @@ export async function renderPdfInto(container, bytes, opts = {}) {
     } catch (e) {
       backend?.destroy();
       if (opts.useWorker === true) throw e;
-      console.warn("doc-viewer: worker backend failed; falling back to main thread.", e);
+      console.warn("ShrimpDocViewer: worker backend failed; falling back to main thread.", e);
     }
   }
 

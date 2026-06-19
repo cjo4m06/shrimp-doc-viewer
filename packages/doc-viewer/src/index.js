@@ -1,4 +1,4 @@
-// Public JS API for doc-viewer — a pure-JS surface over the Rust/WASM core.
+// Public JS API for ShrimpDocViewer — a pure-JS surface over the Rust/WASM core.
 //
 // The WASM module is loaded lazily and exactly once. Fonts and the .wasm binary
 // are separate, cacheable assets (fetched at runtime, never inlined into JS) — the
@@ -177,7 +177,7 @@ export async function mount(target, source, options = {}) {
   } catch (e) {
     // surface a clean error instead of a raw wasm-bindgen panic / rejection
     const msg = e && e.message ? e.message : String(e);
-    throw new Error(`doc-viewer.mount(): failed to render "${format}": ${msg}`);
+    throw new Error(`ShrimpDocViewer.mount(): failed to render "${format}": ${msg}`);
   }
 }
 
@@ -207,7 +207,7 @@ async function dispatch(target, bytes, format, options) {
       return (await import("./odf.js")).renderOdfInto(target, bytes, { ...options, odfKind: format });
     default:
       throw new Error(
-        `doc-viewer.mount(): detected "${format}" — supported: PDF · DOCX · XLSX · PPTX · ` +
+        `ShrimpDocViewer.mount(): detected "${format}" — supported: PDF · DOCX · XLSX · PPTX · ` +
           `CSV · TXT/Markdown · RTF · ODF (odt/ods/odp) · images. ` +
           `Legacy binary (.doc/.xls/.ppt) is out of scope (convert server-side).`
       );

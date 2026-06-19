@@ -1,11 +1,11 @@
 THIRD-PARTY SOFTWARE NOTICES
 ==============================================================================
 
-doc-viewer's WebAssembly core is compiled from Rust and statically includes the
+ShrimpDocViewer's WebAssembly core is compiled from Rust and statically includes the
 third-party crates listed below. Each is distributed under a permissive license
 (MIT / Apache-2.0 / BSD-2-Clause / BSD-3-Clause / Zlib / Unicode-3.0 / 0BSD /
 Unlicense). Their copyright notices and license texts are reproduced here, as the
-licenses require, even though doc-viewer ships only the compiled binary.
+licenses require, even though ShrimpDocViewer ships only the compiled binary.
 
 The bundled font (fonts/NotoSansTC-VF.ttf, Noto Sans TC) is covered separately by
 fonts/OFL.txt (SIL Open Font License 1.1). The runtime npm dependency

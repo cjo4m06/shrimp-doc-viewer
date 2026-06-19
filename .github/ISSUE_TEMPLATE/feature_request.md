@@ -11,7 +11,7 @@ labels: enhancement
 
 ## Scope check
 
-doc-viewer is **viewer-only** and runs **client-side in the browser**. Does this fit?
+ShrimpDocViewer is **viewer-only** and runs **client-side in the browser**. Does this fit?
 (Editing/authoring and server-side features are out of scope.)
 
 ## Proposal / notes
