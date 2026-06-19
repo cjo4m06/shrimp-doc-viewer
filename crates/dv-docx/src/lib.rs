@@ -39,6 +39,8 @@ struct RPr {
     vert_align: Option<i8>,  // 1=superscript, -1=subscript, 0=baseline
     color: Option<Color>,
     highlight: Option<Color>,
+    font_ascii: Option<String>,     // w:rFonts w:ascii/w:hAnsi (Latin face)
+    font_east_asia: Option<String>, // w:rFonts w:eastAsia (CJK face)
 }
 
 /// Partial paragraph properties.
@@ -72,6 +74,12 @@ fn overlay_rpr(base: &mut RPr, top: &RPr) {
     if top.highlight.is_some() {
         base.highlight = top.highlight;
     }
+    if top.font_ascii.is_some() {
+        base.font_ascii = top.font_ascii.clone();
+    }
+    if top.font_east_asia.is_some() {
+        base.font_east_asia = top.font_east_asia.clone();
+    }
 }
 
 #[derive(Clone)]
@@ -88,6 +96,8 @@ struct Run {
     vert_align: i8,
     color: Color,
     highlight: Option<Color>,
+    font_ascii: Option<String>,
+    font_east_asia: Option<String>,
 }
 
 #[derive(Clone)]
@@ -273,7 +283,7 @@ struct DShape {
     image: Option<dv_image::DecodedImage>,
     blocks: Vec<Block>,
     // text laid out at layout time (so rendering needs no font): glyphs + height
-    glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,
+    glyphs: Vec<(u32, f32, f32, f32, Color, bool, usize)>,
     text_h: f32,
 }
 
@@ -361,6 +371,83 @@ fn is_cjk(ch: char) -> bool {
         || (0xAC00..=0xD7A3).contains(&c)
         || (0xF900..=0xFAFF).contains(&c)
         || (0xFF00..=0xFFEF).contains(&c)
+}
+
+/// Standalone symbol/dingbat characters (bullets, boxes, arrows, checkboxes) that
+/// a dedicated symbol font renders better than a text font.
+fn is_symbol(ch: char) -> bool {
+    let c = ch as u32;
+    matches!(c,
+        0x2022..=0x2023 | 0x2043 | 0x204C..=0x204D
+        | 0x2190..=0x21FF // arrows
+        | 0x2460..=0x24FF // enclosed alphanumerics
+        | 0x25A0..=0x25FF // geometric shapes ■□●○◆◇▪▶
+        | 0x2600..=0x27BF // misc symbols + dingbats + checkboxes ☐☑
+        | 0x2B00..=0x2BFF)
+}
+
+/// Multiple loaded fonts plus selection by the run's declared family name and the
+/// character's script. Index 0 is the default (covers CJK + Latin via Noto);
+/// embedded / caller-provided fonts are appended and matched by declared name.
+pub struct Fonts {
+    list: Vec<FontData>,
+    cover: Vec<std::collections::HashSet<u32>>, // parallel to list: covered code points
+    by_name: HashMap<String, usize>,
+    cjk: usize,
+    latin: usize,
+    symbol: usize,
+}
+
+impl Fonts {
+    fn new(default: FontData, extras: Vec<(String, FontData)>) -> Fonts {
+        let mut list = vec![default];
+        let mut by_name = HashMap::new();
+        let mut symbol = 0usize;
+        for (name, fd) in extras {
+            let idx = list.len();
+            list.push(fd);
+            let low = name.to_lowercase();
+            if low.contains("symbol") || low.contains("wingding") || low.contains("dingbat") || low.contains("webding") {
+                symbol = idx;
+            }
+            by_name.entry(low).or_insert(idx);
+        }
+        let cover = list.iter().map(|f| f.coverage()).collect();
+        Fonts { list, cover, by_name, cjk: 0, latin: 0, symbol }
+    }
+    fn covers(&self, i: usize, ch: char) -> bool {
+        ch.is_whitespace() || self.cover.get(i).map(|s| s.contains(&(ch as u32))).unwrap_or(false)
+    }
+    /// Pick the font index for one character: the run's declared face if it has the
+    /// glyph, else the script default, else any loaded font that covers it.
+    fn idx_for(&self, ascii: Option<&str>, ea: Option<&str>, ch: char) -> usize {
+        let declared = if is_cjk(ch) { ea.or(ascii) } else { ascii.or(ea) };
+        if let Some(name) = declared {
+            if let Some(&i) = self.by_name.get(&name.to_lowercase()) {
+                if self.covers(i, ch) {
+                    return i;
+                }
+            }
+        }
+        let fb = if is_symbol(ch) {
+            self.symbol
+        } else if is_cjk(ch) {
+            self.cjk
+        } else {
+            self.latin
+        };
+        if self.covers(fb, ch) {
+            return fb;
+        }
+        (0..self.list.len()).find(|&i| self.covers(i, ch)).unwrap_or(fb)
+    }
+    fn get(&self, i: usize) -> &FontData {
+        &self.list[i.min(self.list.len().saturating_sub(1))]
+    }
+    /// The loaded fonts, indexed by the FontId used in emitted glyph runs.
+    pub fn data(&self) -> &[FontData] {
+        &self.list
+    }
 }
 
 /// A table being assembled during parsing.
@@ -469,7 +556,19 @@ fn parse_document(xml: &str) -> Document {
                     vert_align: 0,
                     color: Color::BLACK,
                     highlight: None,
+                    font_ascii: None,
+                    font_east_asia: None,
                 });
+            }
+            b"w:rFonts" => {
+                if let Some(r) = cur_run.as_mut() {
+                    if let Some(v) = get_attr(e, b"w:ascii").or_else(|| get_attr(e, b"w:hAnsi")) {
+                        r.direct.font_ascii = Some(v);
+                    }
+                    if let Some(v) = get_attr(e, b"w:eastAsia") {
+                        r.direct.font_east_asia = Some(v);
+                    }
+                }
             }
             b"w:rStyle" => {
                 if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val")) {
@@ -1252,9 +1351,50 @@ struct Item {
     vshift: f32, // baseline shift px (negative = up, for super/subscript)
     break_after: bool,
     is_space: bool,
+    font: usize, // index into Fonts
 }
 
-fn shape_para(font: &FontData, para: &Para) -> Vec<Item> {
+/// Shape one text segment, splitting it into maximal runs sharing a font (chosen
+/// per character from the run's declared faces + the character's script).
+fn shape_seg(fonts: &Fonts, run: &Run, sz: f32, vshift: f32, seg: &str, items: &mut Vec<Item>) {
+    let chars: Vec<char> = seg.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let fi = fonts.idx_for(run.font_ascii.as_deref(), run.font_east_asia.as_deref(), chars[i]);
+        let mut sub = String::new();
+        while i < chars.len()
+            && fonts.idx_for(run.font_ascii.as_deref(), run.font_east_asia.as_deref(), chars[i]) == fi
+        {
+            sub.push(chars[i]);
+            i += 1;
+        }
+        let fd = fonts.get(fi);
+        let shaped = shape(fd, &sub, sz);
+        let scale = sz / shaped.units_per_em.max(1.0);
+        for g in &shaped.glyphs {
+            let ch = sub.get(g.cluster as usize..).and_then(|s| s.chars().next()).unwrap_or(' ');
+            let is_space = ch.is_whitespace();
+            items.push(Item {
+                kind: IKind::Glyph,
+                gid: g.glyph_id,
+                advance: g.x_advance * scale,
+                x_off: g.x_offset * scale,
+                size: sz,
+                color: run.color,
+                bold: run.bold,
+                underline: run.underline,
+                strike: run.strike,
+                highlight: run.highlight,
+                vshift,
+                break_after: is_space || is_cjk(ch),
+                is_space,
+                font: fi,
+            });
+        }
+    }
+}
+
+fn shape_para(fonts: &Fonts, para: &Para) -> Vec<Item> {
     let mut items = Vec::new();
     for run in &para.runs {
         let (sz, vshift) = match run.vert_align {
@@ -1264,47 +1404,22 @@ fn shape_para(font: &FontData, para: &Para) -> Vec<Item> {
         };
         // Split on tab/break control chars; shape the text segments.
         let mut seg = String::new();
-        let flush = |seg: &mut String, items: &mut Vec<Item>| {
-            if seg.is_empty() {
-                return;
-            }
-            let shaped = shape(font, seg, sz);
-            let scale = sz / shaped.units_per_em.max(1.0);
-            for g in &shaped.glyphs {
-                let ch = seg.get(g.cluster as usize..).and_then(|s| s.chars().next()).unwrap_or(' ');
-                let is_space = ch.is_whitespace();
-                items.push(Item {
-                    kind: IKind::Glyph,
-                    gid: g.glyph_id,
-                    advance: g.x_advance * scale,
-                    x_off: g.x_offset * scale,
-                    size: sz,
-                    color: run.color,
-                    bold: run.bold,
-                    underline: run.underline,
-                    strike: run.strike,
-                    highlight: run.highlight,
-                    vshift,
-                    break_after: is_space || is_cjk(ch),
-                    is_space,
-                });
-            }
-            seg.clear();
-        };
         for ch in run.text.chars() {
             match ch {
                 '\t' => {
-                    flush(&mut seg, &mut items);
+                    shape_seg(fonts, run, sz, vshift, &seg, &mut items);
+                    seg.clear();
                     items.push(ctrl_item(IKind::Tab, run));
                 }
                 '\n' => {
-                    flush(&mut seg, &mut items);
+                    shape_seg(fonts, run, sz, vshift, &seg, &mut items);
+                    seg.clear();
                     items.push(ctrl_item(IKind::Break, run));
                 }
                 _ => seg.push(ch),
             }
         }
-        flush(&mut seg, &mut items);
+        shape_seg(fonts, run, sz, vshift, &seg, &mut items);
     }
     items
 }
@@ -1324,6 +1439,7 @@ fn ctrl_item(kind: IKind, run: &Run) -> Item {
         vshift: 0.0,
         break_after: true,
         is_space: true,
+        font: 0,
     }
 }
 
@@ -1619,6 +1735,7 @@ struct PlacedGlyph {
     strike: bool,
     highlight: Option<Color>,
     vshift: f32,
+    font: usize,
 }
 
 /// An image placed on its own line (page-relative, at zoom 1).
@@ -1636,7 +1753,7 @@ struct ImageBox {
 #[derive(Default)]
 struct TableDraw {
     rects: Vec<(f32, f32, f32, f32, Color)>,          // x,y,w,h,color
-    glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,   // gid, x, y(baseline), size, color, bold
+    glyphs: Vec<(u32, f32, f32, f32, Color, bool, usize)>,   // gid, x, y(baseline), size, color, bold
 }
 
 /// A laid-out line at zoom 1. `top` is the cumulative content-y of its top edge.
@@ -1720,6 +1837,7 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
                 strike: it.strike,
                 highlight: it.highlight,
                 vshift: it.vshift,
+                font: it.font,
             });
             x += it.advance + if it.break_after { extra } else { 0.0 };
         }
@@ -1728,7 +1846,7 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
 }
 
 /// Shape + wrap all paragraphs into a flat list of laid-out lines (zoom 1).
-fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) {
+fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
     let mut lines = Vec::new();
     let mut floats: Vec<Float> = Vec::new();
     let mut top = 0.0f32;
@@ -1741,7 +1859,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
         let para = match block {
             Block::Para(p) => p,
             Block::Table(t) => {
-                top = layout_table_block(t, page_w, margin_l, margin_r, font, &mut lines, top);
+                top = layout_table_block(t, page_w, margin_l, margin_r, fonts, &mut lines, top);
                 continue;
             }
         };
@@ -1758,7 +1876,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
             fl.body_y = top;
             for sh in &mut fl.shapes {
                 if !sh.blocks.is_empty() && sh.w > 0.0 {
-                    let (g, h) = layout_cell(&sh.blocks, font, sh.w - 8.0);
+                    let (g, h) = layout_cell(&sh.blocks, fonts, sh.w - 8.0);
                     sh.glyphs = g;
                     sh.text_h = h;
                 }
@@ -1818,7 +1936,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
         let bdr_top = if para.pbdr.top { Some((para.pbdr.color, para.pbdr.size)) } else { None };
         let bdr_bottom = if para.pbdr.bottom { Some((para.pbdr.color, para.pbdr.size)) } else { None };
 
-        let items = shape_para(font, para);
+        let items = shape_para(fonts, para);
         if items.is_empty() {
             let line_h = para_line_h(para, DEFAULT_SIZE_PX);
             lines.push(Line {
@@ -1869,7 +1987,12 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                 if let Some(marker) = &para.marker {
                     let msize = para.runs.first().map(|r| r.size).unwrap_or(DEFAULT_SIZE_PX);
                     let mcolor = para.runs.first().map(|r| r.color).unwrap_or(Color::BLACK);
-                    let shaped = shape(font, marker, msize);
+                    // Keep markers on the body font (which renders the common bullet
+                    // glyphs ■/●/▪ as Word does); only fall back to the symbol font if
+                    // the body font lacks the glyph.
+                    let mchar = marker.chars().next().unwrap_or(' ');
+                    let mfont = if fonts.covers(0, mchar) { 0 } else { fonts.idx_for(None, None, mchar) };
+                    let shaped = shape(fonts.get(mfont), marker, msize);
                     let sc = msize / shaped.units_per_em.max(1.0);
                     let mut mx = body_left - para.hanging;
                     for g in &shaped.glyphs {
@@ -1884,6 +2007,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
                             strike: false,
                             highlight: None,
                             vshift: 0.0,
+                            font: mfont,
                         });
                         mx += g.x_advance * sc;
                     }
@@ -1916,7 +2040,7 @@ fn layout_lines(doc: &mut Document, font: &FontData) -> (Vec<Line>, Vec<Float>) 
 
 /// Lay out a block list's paragraphs into glyphs (relative to the content origin)
 /// and return them plus the content height. Used for table cells + text boxes.
-fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool)>, f32) {
+fn layout_cell(blocks: &[Block], fonts: &Fonts, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool, usize)>, f32) {
     let mut glyphs = Vec::new();
     let mut y = 0.0f32;
     let w = width.max(8.0);
@@ -1926,7 +2050,7 @@ fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32,
             Block::Table(_) => continue, // nested tables in cells not laid out (rare)
         };
         y += para.spc_before;
-        let items = shape_para(font, para);
+        let items = shape_para(fonts, para);
         if items.is_empty() {
             y += DEFAULT_SIZE_PX * 1.2 + para.spc_after;
             continue;
@@ -1951,7 +2075,7 @@ fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32,
                 if it.kind == IKind::Break {
                     continue;
                 }
-                glyphs.push((it.gid, x + it.x_off, baseline, it.size, it.color, it.bold));
+                glyphs.push((it.gid, x + it.x_off, baseline, it.size, it.color, it.bold, it.font));
                 x += it.advance;
             }
             y += line_h + if li + 1 == n { para.spc_after } else { 0.0 };
@@ -1962,7 +2086,7 @@ fn layout_cell(blocks: &[Block], font: &FontData, width: f32) -> (Vec<(u32, f32,
 
 /// Lay out a table as a sequence of row-band `Line`s (row-atomic for pagination).
 #[allow(clippy::too_many_arguments)]
-fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font: &FontData, lines: &mut Vec<Line>, mut top: f32) -> f32 {
+fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, fonts: &Fonts, lines: &mut Vec<Line>, mut top: f32) -> f32 {
     let content_w = (page_w - margin_l - margin_r).max(32.0);
 
     // Column widths: from tblGrid, scaled to fit content width.
@@ -2017,7 +2141,7 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
     for (ri, row) in t.rows.iter().enumerate() {
         // Lay out each cell; track its column span + glyphs + content height.
         let mut ci = 0usize;
-        let mut cell_lay: Vec<(usize, usize, Vec<(u32, f32, f32, f32, Color, bool)>, f32, &Cell)> = Vec::new();
+        let mut cell_lay: Vec<(usize, usize, Vec<(u32, f32, f32, f32, Color, bool, usize)>, f32, &Cell)> = Vec::new();
         let mut row_content_h = 0.0f32;
         for cell in &row.cells {
             if ci >= ncols {
@@ -2032,7 +2156,7 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             let (glyphs, h) = if cell.vmerge == VMerge::Continue {
                 (Vec::new(), 0.0)
             } else {
-                layout_cell(&cell.blocks, font, inner_w)
+                layout_cell(&cell.blocks, fonts, inner_w)
             };
             row_content_h = row_content_h.max(h);
             cell_lay.push((c0, c1, glyphs, h, cell));
@@ -2075,8 +2199,8 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
                 2 => ((row_h - mt - mb) - content_h).max(0.0),
                 _ => 0.0,
             };
-            for (gid, gx, gy, sz, col, bold) in glyphs {
-                td.glyphs.push((*gid, x + ml + gx, mt + vshift + gy, *sz, *col, *bold));
+            for (gid, gx, gy, sz, col, bold, fnt) in glyphs {
+                td.glyphs.push((*gid, x + ml + gx, mt + vshift + gy, *sz, *col, *bold, *fnt));
             }
         }
 
@@ -2109,7 +2233,7 @@ struct HdrFtr {
 }
 
 /// Parse + lay out a header/footer part (`word/headerN.xml`).
-fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, nb: &Numbering, page_w: f32, ml: f32, mr: f32) -> Option<HdrFtr> {
+fn build_hdrftr(bytes: &[u8], part: &str, fonts: &Fonts, table: &StyleTable, nb: &Numbering, page_w: f32, ml: f32, mr: f32) -> Option<HdrFtr> {
     let xml = read_zip_entry(bytes, part)?;
     let mut doc = parse_document(&xml);
     doc.page_w = page_w;
@@ -2130,7 +2254,7 @@ fn build_hdrftr(bytes: &[u8], part: &str, font: &FontData, table: &StyleTable, n
     resolve_numbering(&mut doc, nb);
     let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
     resolve_images(&mut doc, bytes, &rels);
-    let (lines, floats) = layout_lines(&mut doc, font);
+    let (lines, floats) = layout_lines(&mut doc, fonts);
     let line_h = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
     let float_h = floats.iter().map(|f| f.off_y + f.img_h).fold(0.0, f32::max);
     let height = line_h.max(float_h);
@@ -2163,14 +2287,14 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
         }
         let mut i = 0;
         while i < td.glyphs.len() {
-            let (_, _, _, sz, col, bold) = td.glyphs[i];
+            let (_, _, _, sz, col, bold, fnt) = td.glyphs[i];
             let mut glyphs = Vec::new();
-            while i < td.glyphs.len() && td.glyphs[i].3 == sz && td.glyphs[i].4 == col && td.glyphs[i].5 == bold {
+            while i < td.glyphs.len() && td.glyphs[i].3 == sz && td.glyphs[i].4 == col && td.glyphs[i].5 == bold && td.glyphs[i].6 == fnt {
                 let (gid, gx, gy, ..) = td.glyphs[i];
                 glyphs.push(PositionedGlyph { id: gid, x: gx * scale, y: top_y + gy * scale });
                 i += 1;
             }
-            dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: sz * scale, paint: Paint::Solid(col), bold, glyphs }));
+            dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size: sz * scale, paint: Paint::Solid(col), bold, glyphs }));
         }
         return;
     }
@@ -2205,7 +2329,7 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
         }
     }
 
-    // Glyphs grouped by (size, color, bold, vshift).
+    // Glyphs grouped by (size, color, bold, vshift, font).
     let mut i = 0;
     while i < line.placed.len() {
         let g0 = line.placed[i];
@@ -2215,11 +2339,12 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
             && line.placed[i].color == g0.color
             && line.placed[i].bold == g0.bold
             && line.placed[i].vshift == g0.vshift
+            && line.placed[i].font == g0.font
         {
             glyphs.push(PositionedGlyph { id: line.placed[i].id, x: line.placed[i].x * scale, y: baseline + g0.vshift * scale });
             i += 1;
         }
-        dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: g0.size * scale, paint: Paint::Solid(g0.color), bold: g0.bold, glyphs }));
+        dl.push(Command::Glyphs(GlyphRun { font: FontId(g0.font as u32), size: g0.size * scale, paint: Paint::Solid(g0.color), bold: g0.bold, glyphs }));
     }
 
     // Underline / strike rules (group consecutive runs sharing the decoration).
@@ -2419,14 +2544,14 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
         let (gx0, gy0) = (sx + pad, sy + pad + vshift);
         let mut i = 0;
         while i < sh.glyphs.len() {
-            let (_, _, _, size, color, bold) = sh.glyphs[i];
+            let (_, _, _, size, color, bold, fnt) = sh.glyphs[i];
             let mut run = Vec::new();
-            while i < sh.glyphs.len() && sh.glyphs[i].3 == size && sh.glyphs[i].4 == color && sh.glyphs[i].5 == bold {
+            while i < sh.glyphs.len() && sh.glyphs[i].3 == size && sh.glyphs[i].4 == color && sh.glyphs[i].5 == bold && sh.glyphs[i].6 == fnt {
                 let (gid, gx, gy, ..) = sh.glyphs[i];
                 run.push(PositionedGlyph { id: gid, x: (gx0 + gx) * scale, y: (gy0 + gy) * scale });
                 i += 1;
             }
-            dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size: size * scale, paint: Paint::Solid(color), bold, glyphs: run }));
+            dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size: size * scale, paint: Paint::Solid(color), bold, glyphs: run }));
         }
     }
 }
@@ -2487,7 +2612,8 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
     let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
     resolve_numbering(&mut doc, &numbering);
     resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
-    let (lines, floats) = layout_lines(&mut doc, font);
+    let fonts = Fonts::new(font.clone(), load_embedded_fonts(bytes));
+    let (lines, floats) = layout_lines(&mut doc, &fonts);
     let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
     for line in &lines {
@@ -2521,10 +2647,19 @@ pub struct DocxDoc {
     ftr_default: Option<HdrFtr>,
     floats: Vec<Float>,
     margin_l: f32,
+    fonts: Fonts,
 }
 
 impl DocxDoc {
+    /// Parse with just a default font (embedded fonts are still loaded from the file).
     pub fn parse(bytes: &[u8], font: &FontData) -> DocxDoc {
+        DocxDoc::parse_with_fonts(bytes, font.clone(), Vec::new())
+    }
+
+    /// Parse with a default font plus caller-provided named fonts (e.g. a 標楷體
+    /// the document declares but does not embed). Lookup order per run: embedded /
+    /// caller name match -> script fallback -> default.
+    pub fn parse_with_fonts(bytes: &[u8], font: FontData, mut extra_fonts: Vec<(String, FontData)>) -> DocxDoc {
         let mut doc = read_zip_entry(bytes, "word/document.xml").map(|x| parse_document(&x)).unwrap_or_else(|| Document {
             blocks: Vec::new(),
             page_w: 816.0,
@@ -2544,7 +2679,10 @@ impl DocxDoc {
         let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
         resolve_numbering(&mut doc, &numbering);
         resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
-        let (lines, floats) = layout_lines(&mut doc, font);
+        // Caller fonts first (so they win on name clash), then the file's embedded fonts.
+        extra_fonts.extend(load_embedded_fonts(bytes));
+        let fonts = Fonts::new(font, extra_fonts);
+        let (lines, floats) = layout_lines(&mut doc, &fonts);
 
         // Resolve + lay out header/footer parts (by reference type).
         let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
@@ -2552,7 +2690,7 @@ impl DocxDoc {
             let id = refs.iter().find(|(t, _)| t == ty).map(|(_, id)| id)?;
             let target = doc_rels.get(id)?;
             let path = resolve_rel("word", target);
-            build_hdrftr(bytes, &path, font, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
+            build_hdrftr(bytes, &path, &fonts, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
         };
         let hdr_first = part(&doc.hdr_refs, "first");
         let hdr_default = part(&doc.hdr_refs, "default");
@@ -2609,7 +2747,14 @@ impl DocxDoc {
             ftr_default,
             floats,
             margin_l: doc.margin_l,
+            fonts,
         }
+    }
+
+    /// The loaded fonts (default + caller + embedded), so the caller can build a
+    /// render FontRegistry whose FontIds match the emitted glyph runs.
+    pub fn fonts(&self) -> &Fonts {
+        &self.fonts
     }
 
     pub fn page_count(&self) -> usize {
@@ -2682,6 +2827,74 @@ fn read_zip_bytes(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
     let mut v = Vec::new();
     f.read_to_end(&mut v).ok()?;
     Some(v)
+}
+
+/// True if the bytes begin with a recognised sfnt font signature.
+fn is_font_magic(d: &[u8]) -> bool {
+    d.len() >= 4 && matches!(&d[..4], [0, 1, 0, 0] | b"OTTO" | b"true" | b"ttcf" | b"typ1")
+}
+
+/// De-obfuscate an OOXML embedded font (.odttf): XOR the first 32 bytes with the
+/// fontKey GUID (16 bytes, reversed). No-op if the key is all-zero.
+fn deobfuscate_font(data: &mut [u8], font_key: &str) {
+    let hex: Vec<u8> = font_key.bytes().filter(u8::is_ascii_hexdigit).collect();
+    if hex.len() < 32 {
+        return;
+    }
+    let mut guid = [0u8; 16];
+    for (i, g) in guid.iter_mut().enumerate() {
+        let hi = (hex[i * 2] as char).to_digit(16).unwrap_or(0);
+        let lo = (hex[i * 2 + 1] as char).to_digit(16).unwrap_or(0);
+        *g = (hi * 16 + lo) as u8;
+    }
+    let n = data.len().min(32);
+    for i in 0..n {
+        data[i] ^= guid[15 - (i % 16)];
+    }
+}
+
+/// Load fonts embedded in the docx (`word/fonts/*` referenced by fontTable.xml),
+/// de-obfuscating where needed, keyed by the declared family name. Only the first
+/// (regular) weight per family is kept for selection; faux-bold handles bold.
+fn load_embedded_fonts(bytes: &[u8]) -> Vec<(String, FontData)> {
+    let xml = match read_zip_entry(bytes, "word/fontTable.xml") {
+        Some(x) => x,
+        None => return Vec::new(),
+    };
+    let rels = read_zip_entry(bytes, "word/_rels/fontTable.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+    let mut out: Vec<(String, FontData)> = Vec::new();
+    let mut reader = Reader::from_str(&xml);
+    let mut cur_name: Option<String> = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
+                b"w:font" => cur_name = get_attr(&e, b"w:name"),
+                b"w:embedRegular" | b"w:embedBold" | b"w:embedItalic" | b"w:embedBoldItalic" => {
+                    if let (Some(name), Some(rid)) = (cur_name.clone(), get_attr(&e, b"r:id")) {
+                        if out.iter().any(|(n, _)| *n == name) {
+                            continue; // keep first weight only
+                        }
+                        let key = get_attr(&e, b"w:fontKey").unwrap_or_default();
+                        if let Some(target) = rels.get(&rid) {
+                            let path = resolve_rel("word", target);
+                            if let Some(mut data) = read_zip_bytes(bytes, &path) {
+                                if !is_font_magic(&data) {
+                                    deobfuscate_font(&mut data, &key);
+                                }
+                                if is_font_magic(&data) {
+                                    out.push((name, FontData::new(data)));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    out
 }
 
 fn rels_map(xml: &str) -> HashMap<String, String> {
@@ -2968,6 +3181,8 @@ fn resolve_one_para(para: &mut Para, table: &StyleTable) {
         run.vert_align = rpr.vert_align.unwrap_or(0);
         run.color = rpr.color.unwrap_or(Color::BLACK);
         run.highlight = rpr.highlight;
+        run.font_ascii = rpr.font_ascii.clone();
+        run.font_east_asia = rpr.font_east_asia.clone();
     }
 }
 

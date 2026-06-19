@@ -15,6 +15,7 @@ use dv_ir::PathData;
 
 /// Owns the raw bytes of a single font face. Cheap to construct; the actual
 /// parser faces are built on demand (M1 keeps it simple — caching comes later).
+#[derive(Clone)]
 pub struct FontData {
     bytes: Vec<u8>,
     units_per_em: f32,
@@ -35,6 +36,32 @@ impl FontData {
     /// Font design units per em (the outline coordinate space). Usually 1000 (CFF) or 2048 (TTF).
     pub fn units_per_em(&self) -> f32 {
         self.units_per_em
+    }
+
+    /// Whether the font's cmap maps this character to a real glyph. Cheap (a cmap
+    /// lookup, no shaping); used to fall back when a chosen font lacks a glyph.
+    pub fn has_char(&self, ch: char) -> bool {
+        rustybuzz::Face::from_slice(&self.bytes, 0)
+            .and_then(|f| f.glyph_index(ch))
+            .is_some()
+    }
+
+    /// The set of Unicode code points the font covers (cmap). Built once so a
+    /// font-selection layer can do pure set lookups instead of per-char shaping.
+    pub fn coverage(&self) -> std::collections::HashSet<u32> {
+        let mut set = std::collections::HashSet::new();
+        if let Some(face) = rustybuzz::Face::from_slice(&self.bytes, 0) {
+            if let Some(cmap) = face.tables().cmap {
+                for sub in cmap.subtables {
+                    if sub.is_unicode() {
+                        sub.codepoints(|cp: u32| {
+                            set.insert(cp);
+                        });
+                    }
+                }
+            }
+        }
+        set
     }
 }
 
