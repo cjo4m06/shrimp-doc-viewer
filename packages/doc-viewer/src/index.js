@@ -60,7 +60,10 @@ async function toBytes(source) {
  * headers, so a raw byte scan works.
  */
 export function sniffOoxml(bytes) {
-  const text = new TextDecoder("latin1").decode(bytes.subarray(0, 8192));
+  // Scan the whole archive: part names live in local headers (scattered through the
+  // file, after any leading media) and in the central directory at the end, so a
+  // small prefix window misses them on real documents.
+  const text = new TextDecoder("latin1").decode(bytes);
   if (text.includes("xl/workbook.xml")) return "xlsx";
   if (text.includes("word/document.xml")) return "docx";
   if (text.includes("ppt/presentation.xml")) return "pptx";

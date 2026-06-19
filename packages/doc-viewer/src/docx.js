@@ -146,11 +146,24 @@ export class DocxViewer {
     const frac = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     this.zoom = next;
     this._applyGeometry();
-    for (const i of [...this.rendered]) this._evict(i);
+    // Instant feedback: CSS-scale the already-rendered canvases (cheap GPU
+    // transform) instead of re-rasterizing on every wheel tick.
+    for (const i of this.rendered) {
+      const c = this.pageEls[i].firstChild;
+      if (c) {
+        c.style.width = this.pw * this.zoom + "px";
+        c.style.height = this.ph * this.zoom + "px";
+      }
+    }
     scroller.scrollTop = frac * scroller.scrollHeight;
     this._updateZoomLabel();
     this.onZoom?.(this.zoom);
-    this._renderVisible();
+    // Re-rasterize crisply once zooming settles (coalesces rapid ticks).
+    clearTimeout(this._zt);
+    this._zt = setTimeout(() => {
+      for (const i of [...this.rendered]) this._evict(i);
+      this._renderVisible();
+    }, 160);
   }
 
   zoomIn() { this.setZoom(this.zoom * 1.25); }

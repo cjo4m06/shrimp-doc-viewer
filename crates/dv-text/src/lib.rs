@@ -206,52 +206,64 @@ pub fn shape(font: &FontData, text: &str, _size: f32) -> ShapedRun {
     ShapedRun { glyphs, units_per_em: face.units_per_em() as f32 }
 }
 
-/// Extract the outline of a single glyph, in **font design units** with the
-/// font's native y-up orientation. The backend scales by `size/units_per_em`
-/// and flips y when placing it on the page.
+/// A font opened **once** for repeated glyph-outline extraction. Building the
+/// `FontRef` parses the table directory, so doing it per glyph (×hundreds on a CJK
+/// page, ×every zoom re-render) is the rendering hot path; hold one of these per
+/// font per render instead.
+pub struct GlyphSource<'a> {
+    font: skrifa::FontRef<'a>,
+}
+
+impl FontData {
+    /// Open the font once for outlining (returns `None` if the bytes don't parse).
+    pub fn glyph_source(&self) -> Option<GlyphSource<'_>> {
+        skrifa::FontRef::from_index(&self.bytes, 0).ok().map(|font| GlyphSource { font })
+    }
+}
+
+struct Pen<'a> {
+    path: &'a mut PathData,
+}
+
+impl skrifa::outline::OutlinePen for Pen<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.path.move_to(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.path.line_to(x, y);
+    }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.path.quad_to(cx, cy, x, y);
+    }
+    fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
+        self.path.cubic_to(c1x, c1y, c2x, c2y, x, y);
+    }
+    fn close(&mut self) {
+        self.path.close();
+    }
+}
+
+impl GlyphSource<'_> {
+    /// Outline a glyph in **font design units** (y-up). The backend scales by
+    /// `size/units_per_em` and flips y when placing it on the page.
+    pub fn outline(&self, glyph_id: u32) -> PathData {
+        use skrifa::instance::{LocationRef, Size};
+        use skrifa::outline::DrawSettings;
+        use skrifa::{GlyphId, MetadataProvider};
+        let mut path = PathData::new();
+        let outlines = self.font.outline_glyphs();
+        let Some(glyph) = outlines.get(GlyphId::new(glyph_id)) else {
+            return path;
+        };
+        let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
+        let mut pen = Pen { path: &mut path };
+        let _ = glyph.draw(settings, &mut pen);
+        path
+    }
+}
+
+/// Convenience: outline a single glyph (rebuilds the font each call — prefer
+/// [`FontData::glyph_source`] + [`GlyphSource::outline`] in a render loop).
 pub fn outline_glyph(font: &FontData, glyph_id: u32) -> PathData {
-    use skrifa::outline::{DrawSettings, OutlinePen};
-    use skrifa::instance::{LocationRef, Size};
-    use skrifa::{FontRef, GlyphId, MetadataProvider};
-
-    let mut path = PathData::new();
-
-    let font_ref = match FontRef::from_index(&font.bytes, 0) {
-        Ok(f) => f,
-        Err(_) => return path,
-    };
-
-    let outlines = font_ref.outline_glyphs();
-    let glyph = match outlines.get(GlyphId::new(glyph_id)) {
-        Some(g) => g,
-        None => return path,
-    };
-
-    struct Pen<'a> {
-        path: &'a mut PathData,
-    }
-
-    impl OutlinePen for Pen<'_> {
-        fn move_to(&mut self, x: f32, y: f32) {
-            self.path.move_to(x, y);
-        }
-        fn line_to(&mut self, x: f32, y: f32) {
-            self.path.line_to(x, y);
-        }
-        fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-            self.path.quad_to(cx, cy, x, y);
-        }
-        fn curve_to(&mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) {
-            self.path.cubic_to(c1x, c1y, c2x, c2y, x, y);
-        }
-        fn close(&mut self) {
-            self.path.close();
-        }
-    }
-
-    let settings = DrawSettings::unhinted(Size::unscaled(), LocationRef::default());
-    let mut pen = Pen { path: &mut path };
-    let _ = glyph.draw(settings, &mut pen);
-
-    path
+    font.glyph_source().map(|s| s.outline(glyph_id)).unwrap_or_else(PathData::new)
 }

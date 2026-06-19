@@ -73,8 +73,10 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
     let mut pixmap = Pixmap::new(w, h).expect("non-zero pixmap dimensions");
     pixmap.fill(SkColor::WHITE);
 
-    // Cache outlines within a single render — CJK pages repeat glyphs heavily.
+    // Cache outlines within a single render — CJK pages repeat glyphs heavily —
+    // and open each font once (rebuilding the FontRef per glyph is the hot path).
     let mut glyph_cache: HashMap<(u32, u32), Option<tiny_skia::Path>> = HashMap::new();
+    let mut sources: HashMap<u32, Option<dv_text::GlyphSource>> = HashMap::new();
 
     for command in &dl.commands {
         match command {
@@ -121,10 +123,12 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                     None
                 };
 
+                let src = sources.entry(run.font.0).or_insert_with(|| font.glyph_source());
                 for g in &run.glyphs {
-                    let entry = glyph_cache
-                        .entry((run.font.0, g.id))
-                        .or_insert_with(|| build_path(&dv_text::outline_glyph(font, g.id)));
+                    let entry = glyph_cache.entry((run.font.0, g.id)).or_insert_with(|| {
+                        let outline = src.as_ref().map(|s| s.outline(g.id)).unwrap_or_else(PathData::new);
+                        build_path(&outline)
+                    });
                     let Some(p) = entry else { continue };
                     // Outline is font-unit, y-up. Scale to px and flip y onto the
                     // baseline at (g.x, g.y).

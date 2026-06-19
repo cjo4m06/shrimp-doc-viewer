@@ -175,7 +175,7 @@ export class XlsxViewer {
     this.scroll.scrollTop = fy * this.spacer.offsetHeight;
     this._updateZoomLabel();
     this.onZoom?.(this.zoom);
-    this._render();
+    this._schedule(); // coalesce rapid zoom ticks into one render per frame
   }
 
   zoomIn() { this.setZoom(this.zoom * 1.25); }
