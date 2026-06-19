@@ -120,7 +120,7 @@ impl FlowDoc {
         // glyphs grouped by (size, color, bold, font)
         let mut i = 0;
         let mut on_page: Vec<&G> = self.glyphs.iter().filter(|g| g.baseline >= top - 4.0 && g.baseline <= bot + 4.0).collect();
-        on_page.sort_by(|a, b| (a.size as i32, a.color.r, a.color.g, a.color.b, a.bold as i32, a.font).cmp(&(b.size as i32, b.color.r, b.color.g, b.color.b, b.bold as i32, b.font)).then(a.baseline.partial_cmp(&b.baseline).unwrap()));
+        on_page.sort_by(|a, b| (a.size as i32, a.color.r, a.color.g, a.color.b, a.bold as i32, a.font).cmp(&(b.size as i32, b.color.r, b.color.g, b.color.b, b.bold as i32, b.font)).then(a.baseline.partial_cmp(&b.baseline).unwrap_or(std::cmp::Ordering::Equal)));
         while i < on_page.len() {
             let g0 = on_page[i];
             let mut run = Vec::new();
@@ -176,6 +176,19 @@ struct Tok {
 }
 
 impl Layout<'_> {
+    /// If a line of height `h` would straddle the bottom margin of the current
+    /// page, advance to the top margin of the next page so no line is clipped.
+    fn break_if_needed(&mut self, h: f32) {
+        if h >= PAGE_H - 2.0 * MARGIN {
+            return; // taller than a page's content area — can't help, don't loop
+        }
+        let page = (self.y / PAGE_H).floor();
+        let bottom = (page + 1.0) * PAGE_H - MARGIN;
+        if self.y + h > bottom {
+            self.y = (page + 1.0) * PAGE_H + MARGIN;
+        }
+    }
+
     fn block(&mut self, b: &Block) {
         match b {
             Block::Heading(level, spans) => {
@@ -206,16 +219,13 @@ impl Layout<'_> {
                 self.y += BODY_SIZE * 0.35;
             }
             Block::Code(lines) => {
-                let pad = 8.0;
-                let lh = BODY_SIZE * 1.45;
-                let h = lines.len() as f32 * lh + pad * 2.0;
-                self.rects.push(Rect { x: MARGIN, y: self.y, w: PAGE_W - 2.0 * MARGIN, h, color: CODE_TINT });
-                self.y += pad;
+                let lh = BODY_SIZE * 1.4;
+                let size = BODY_SIZE * 0.92;
+                self.y += 6.0;
                 for ln in lines {
-                    let s = vec![Span { text: ln.clone(), mono: true, color: Some(Color { r: 0x2a, g: 0x2d, b: 0x33, a: 255 }), ..Default::default() }];
-                    self.flow_fixed(&s, MARGIN + pad, PAGE_W - MARGIN - pad, BODY_SIZE * 0.92, lh);
+                    self.code_rows(ln, size, lh);
                 }
-                self.y += pad + BODY_SIZE * 0.4;
+                self.y += 6.0 + BODY_SIZE * 0.4;
             }
             Block::Quote(spans) => {
                 let y0 = self.y + 2.0;
@@ -244,6 +254,7 @@ impl Layout<'_> {
                 this.y += line_h;
                 return;
             }
+            this.break_if_needed(line_h); // keep the whole line on one page
             let baseline = this.y + base_size * 0.95;
             let mut x = left;
             for t in line.iter() {
@@ -280,22 +291,41 @@ impl Layout<'_> {
         emit(self, &mut line);
     }
 
-    /// Emit a single fixed-height row (no wrapping), used for code lines.
-    fn flow_fixed(&mut self, spans: &[Span], left: f32, _right: f32, size: f32, line_h: f32) {
-        let toks = self.tokens(spans, size, false, None);
-        let baseline = self.y + size * 0.95;
-        let mut x = left;
+    /// Lay out one source code line: char-wrap at the code column width, paginate,
+    /// and paint a tint band behind each visual row (so it never clips a page edge).
+    fn code_rows(&mut self, text: &str, size: f32, line_h: f32) {
+        let left = MARGIN + 8.0;
+        let avail = PAGE_W - 2.0 * MARGIN - 16.0;
+        let color = Color { r: 0x2a, g: 0x2d, b: 0x33, a: 255 };
+        let toks = self.tokens(&[Span { text: text.to_string(), mono: true, color: Some(color), ..Default::default() }], size, false, None);
+        // wrap into visual rows of (glyph id, x-within-row, font)
+        let mut rows: Vec<Vec<(u32, f32, usize)>> = vec![Vec::new()];
+        let mut x = 0.0f32;
         for t in &toks {
-            self.glyphs.push(G { id: t.id, x, baseline, size: t.size, color: t.color, bold: t.bold, font: t.font });
+            if x + t.advance > avail && !rows.last().unwrap().is_empty() {
+                rows.push(Vec::new());
+                x = 0.0;
+            }
+            rows.last_mut().unwrap().push((t.id, x, t.font));
             x += t.advance;
         }
-        self.y += line_h;
+        for row in rows {
+            self.break_if_needed(line_h);
+            self.rects.push(Rect { x: MARGIN, y: self.y, w: PAGE_W - 2.0 * MARGIN, h: line_h, color: CODE_TINT });
+            let baseline = self.y + size * 0.95;
+            for (id, rx, font) in row {
+                self.glyphs.push(G { id, x: left + rx, baseline, size, color, bold: false, font });
+            }
+            self.y += line_h;
+        }
     }
 
     fn tokens(&self, spans: &[Span], base_size: f32, bold_all: bool, force_color: Option<Color>) -> Vec<Tok> {
         let mut out = Vec::new();
         for sp in spans {
-            let size = sp.size.unwrap_or(base_size);
+            // clamp size so \fs0 / negative / absurd sizes can't break layout (DoS/overflow)
+            let raw = sp.size.unwrap_or(base_size);
+            let size = if raw.is_finite() { raw.clamp(4.0, 400.0) } else { base_size };
             let bold = sp.bold || bold_all;
             let color = force_color.or(sp.color).unwrap_or(Color::BLACK);
             // pick font per char: mono -> declared "monospace"/symbol fallback; else default

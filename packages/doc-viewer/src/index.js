@@ -68,7 +68,7 @@ export function sniffOoxml(bytes) {
   if (text.includes("opendocument.spreadsheet")) return "ods";
   if (text.includes("opendocument.text")) return "odt";
   if (text.includes("opendocument.presentation")) return "odp";
-  return "ooxml";
+  return "zip"; // an unrecognized zip (epub/jar/…) → clean "unsupported" error
 }
 
 /** Distinguish delimited tabular text (csv) from prose (markdown / plain text). */
@@ -76,14 +76,19 @@ function looksTabular(bytes) {
   const text = new TextDecoder("utf-8").decode(bytes.subarray(0, 8192));
   const lines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 12);
   if (lines.length < 2) return false;
-  for (const delim of [",", "\t", ";"]) {
+  // markdown / prose signals → not a table
+  const md = lines.filter((l) => /^(#{1,6}\s|>\s|[-*+]\s|\d+[.)]\s|```|~~~|\|)/.test(l.trimStart())).length;
+  if (md >= Math.max(1, lines.length * 0.3)) return false;
+  // tab/semicolon are unambiguous; comma last (and rejected if it reads like prose)
+  for (const delim of ["\t", ";", ","]) {
     const counts = lines.map((l) => l.split(delim).length - 1);
     const withDelim = counts.filter((n) => n >= 1).length;
-    // most lines have the delimiter and a consistent field count -> a table
-    if (withDelim >= lines.length * 0.7) {
-      const max = Math.max(...counts);
-      const consistent = counts.filter((n) => n === max || n === max - 1).length;
-      if (max >= 1 && consistent >= lines.length * 0.7) return true;
+    if (withDelim < lines.length * 0.8) continue;
+    const max = Math.max(...counts);
+    const exact = counts.filter((n) => n === max).length; // require an EXACT, stable column count
+    if (max >= 1 && exact >= lines.length * 0.8) {
+      if (delim === "," && max < 2 && lines.filter((l) => /, /.test(l)).length > lines.length * 0.5) continue;
+      return true;
     }
   }
   return false;
@@ -102,7 +107,8 @@ export function sniffFormat(bytes) {
   const head = new TextDecoder("utf-8").decode(bytes.subarray(0, 512));
   const trimmed = head.replace(/^﻿/, "").trimStart();
   if (trimmed.startsWith("{\\rtf")) return "rtf";
-  if (trimmed.toLowerCase().startsWith("<svg") || /<\?xml[^>]*>\s*<svg/i.test(trimmed)) return "image"; // svg
+  // SVG: <svg> anywhere in the head (after an optional xml prolog / doctype / comments)
+  if (trimmed.toLowerCase().includes("<svg")) return "image";
   const sample = bytes.subarray(0, 4096);
   let ctrl = 0;
   for (const b of sample) {
@@ -127,11 +133,44 @@ export function sniffFormat(bytes) {
  * @param {{ scale?: number, pdfiumWasmUrl?: string, onProgress?: (n:number,total:number)=>void }} [options]
  * @returns {Promise<{ pageCount: number, destroy: () => void }>}
  */
+/** Transcode UTF-16 (BOM or NUL pattern) to UTF-8 bytes; else return input unchanged. */
+function transcodeIfUtf16(bytes) {
+  const utf8 = (s) => new TextEncoder().encode(s);
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return utf8(new TextDecoder("utf-16le").decode(bytes));
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return utf8(new TextDecoder("utf-16be").decode(bytes));
+  const n = Math.min(bytes.length, 512);
+  let evenNul = 0, oddNul = 0;
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) (i % 2 === 0 ? evenNul++ : oddNul++);
+  if (n >= 16) {
+    if (oddNul > n / 4 && evenNul < 2) return utf8(new TextDecoder("utf-16le").decode(bytes));
+    if (evenNul > n / 4 && oddNul < 2) return utf8(new TextDecoder("utf-16be").decode(bytes));
+  }
+  return bytes;
+}
+
 export async function mount(target, source, options = {}) {
-  const bytes = await toBytes(source);
+  let bytes = await toBytes(source);
   let format = options.format || sniffFormat(bytes);
+  if (format === "unknown") {
+    // maybe UTF-16 text (NUL bytes make the byte scan bail) — transcode + re-sniff
+    const t = transcodeIfUtf16(bytes);
+    if (t !== bytes) {
+      bytes = t;
+      format = sniffFormat(bytes);
+    }
+  }
   if (format === "zip") format = sniffOoxml(bytes); // resolve OOXML/ODF subtype
 
+  try {
+    return await dispatch(target, bytes, format, options);
+  } catch (e) {
+    // surface a clean error instead of a raw wasm-bindgen panic / rejection
+    const msg = e && e.message ? e.message : String(e);
+    throw new Error(`doc-viewer.mount(): failed to render "${format}": ${msg}`);
+  }
+}
+
+async function dispatch(target, bytes, format, options) {
   switch (format) {
     case "pdf":
       return (await import("./pdf.js")).renderPdfInto(target, bytes, options);

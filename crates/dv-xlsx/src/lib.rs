@@ -88,15 +88,33 @@ pub fn sheet_names(bytes: &[u8]) -> Vec<String> {
 /// auto-detected from the first non-empty line; quoted fields may contain the
 /// delimiter, newlines and `""`-escaped quotes; CRLF and LF both end a record.
 fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
+    const MAX_ROWS: usize = 1_000_000;
+    const MAX_COLS: usize = 4096;
     let mut text = String::from_utf8_lossy(bytes).into_owned();
     if text.starts_with('\u{feff}') {
         text.remove(0); // strip UTF-8 BOM
     }
-    let first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    // Choose the delimiter from the first several non-comment lines, preferring the
+    // candidate that yields the most consistent field count (not just the first line).
+    let sample: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).take(10).collect();
+    let score = |d: char| -> (usize, usize) {
+        use std::collections::HashMap as M;
+        let mut counts: M<usize, usize> = M::new();
+        let mut with = 0usize;
+        for l in &sample {
+            let n = l.matches(d).count();
+            if n >= 1 {
+                with += 1;
+            }
+            *counts.entry(n).or_insert(0) += 1;
+        }
+        let consistency = counts.values().copied().max().unwrap_or(0);
+        (with, consistency)
+    };
     let delim = [',', '\t', ';']
         .into_iter()
-        .filter(|&d| first_line.contains(d))
-        .max_by_key(|&d| first_line.matches(d).count())
+        .filter(|&d| score(d).0 > 0)
+        .max_by_key(|&d| score(d))
         .unwrap_or(',');
 
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -105,6 +123,9 @@ fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
     let mut quoted = false;
     let mut it = text.chars().peekable();
     while let Some(c) = it.next() {
+        if rows.len() >= MAX_ROWS {
+            break;
+        }
         if quoted {
             if c == '"' {
                 if it.peek() == Some(&'"') {
@@ -119,19 +140,28 @@ fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
         } else if c == '"' {
             quoted = true;
         } else if c == delim {
-            row.push(std::mem::take(&mut field));
+            if row.len() < MAX_COLS {
+                row.push(std::mem::take(&mut field));
+            } else {
+                field.clear();
+            }
         } else if c == '\n' || c == '\r' {
             if c == '\r' && it.peek() == Some(&'\n') {
                 it.next();
             }
-            row.push(std::mem::take(&mut field));
+            if row.len() < MAX_COLS {
+                row.push(std::mem::take(&mut field));
+            }
+            field.clear();
             rows.push(std::mem::take(&mut row));
         } else {
             field.push(c);
         }
     }
-    if !field.is_empty() || !row.is_empty() {
-        row.push(field);
+    if (!field.is_empty() || !row.is_empty()) && rows.len() < MAX_ROWS {
+        if row.len() < MAX_COLS {
+            row.push(field);
+        }
         rows.push(row);
     }
     rows
@@ -208,8 +238,9 @@ impl Sheet {
 
     /// Build a grid sheet from already-parsed rows of strings (CSV, ODS, …).
     pub fn from_rows(rows: Vec<Vec<String>>, opts: &Options) -> Sheet {
-        let n_rows = rows.len().clamp(1, opts.max_rows) as u32;
-        let n_cols = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, opts.max_cols) as u32;
+        // `.min(.max(1))` (not clamp) so a caller-set max of 0 can't panic (lo>hi).
+        let n_rows = rows.len().max(1).min(opts.max_rows.max(1)) as u32;
+        let n_cols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1).min(opts.max_cols.max(1)) as u32;
 
         let mut values = HashMap::new();
         let mut col_chars = vec![0usize; n_cols as usize];
@@ -222,9 +253,16 @@ impl Sheet {
                 }
                 // Treat as a number only when it cleanly parses and isn't an
                 // identifier-like leading-zero integer (e.g. "007", phone numbers).
-                let numeric = t.parse::<f64>().ok().filter(|_| t == "0" || t.contains('.') || !t.starts_with('0'));
+                let numeric = t
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|n| n.is_finite())
+                    .filter(|_| t == "0" || t.contains('.') || !t.starts_with('0'));
                 let v = match numeric {
                     Some(n) => CellVal::Num(n),
+                    // cap pathological cell length (a cell can't display 1M chars;
+                    // shaping the full string every frame would hang) — char-safe slice.
+                    None if t.chars().count() > 2000 => CellVal::Text(t.chars().take(2000).collect()),
                     None => CellVal::Text(t.to_string()),
                 };
                 values.insert((r as u32, c as u32), v);

@@ -73,6 +73,32 @@ pub fn parse_markdown(input: &str) -> Vec<Block> {
             i += 1;
             continue;
         }
+        // setext heading: a paragraph line underlined by ===/--- becomes a heading
+        if !para.is_empty() {
+            let u: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+            if !u.is_empty() && (u.chars().all(|c| c == '=') || u.chars().all(|c| c == '-')) {
+                let level = if u.starts_with('=') { 1 } else { 2 };
+                let joined = para.join(" ");
+                blocks.push(Block::Heading(level, parse_inline(joined.trim())));
+                para.clear();
+                i += 1;
+                continue;
+            }
+        }
+        // indented (4-space / tab) code block — only when not continuing a paragraph
+        if para.is_empty() && (line.starts_with("    ") || line.starts_with('\t')) {
+            let mut code = Vec::new();
+            while i < lines.len() && (lines[i].starts_with("    ") || lines[i].starts_with('\t') || lines[i].trim().is_empty()) {
+                if lines[i].trim().is_empty() && (i + 1 >= lines.len() || !(lines[i + 1].starts_with("    ") || lines[i + 1].starts_with('\t'))) {
+                    break;
+                }
+                let stripped = lines[i].strip_prefix("    ").or_else(|| lines[i].strip_prefix('\t')).unwrap_or(lines[i]);
+                code.push(stripped.to_string());
+                i += 1;
+            }
+            blocks.push(Block::Code(code));
+            continue;
+        }
         // thematic break
         if is_rule(t) {
             flush_para(&mut para, &mut blocks);
@@ -185,24 +211,37 @@ fn parse_inline(s: &str) -> Vec<Span> {
         let c = chars[i];
         let two = chars.get(i + 1).map(|&n| (c, n));
         match () {
+            // backslash escape: the next char is literal
+            _ if c == '\\' => {
+                if let Some(&n) = chars.get(i + 1) {
+                    buf.push(n);
+                    i += 2;
+                } else {
+                    buf.push('\\');
+                    i += 1;
+                }
+            }
             _ if two == Some(('*', '*')) || two == Some(('_', '_')) => {
                 push(&mut spans, &mut buf, bold, italic);
                 bold = !bold;
                 i += 2;
             }
             _ if two == Some(('~', '~')) => {
-                // strikethrough run
+                // strikethrough run; if never closed, keep the text (don't drop the last char)
                 push(&mut spans, &mut buf, bold, italic);
                 i += 2;
                 let start = i;
                 while i + 1 < chars.len() && !(chars[i] == '~' && chars[i + 1] == '~') {
                     i += 1;
                 }
-                let text: String = chars[start..i].iter().collect();
+                let closed = i + 1 < chars.len();
+                let end = if closed { i } else { chars.len() };
+                let text: String = chars[start..end].iter().collect();
                 spans.push(Span { text, bold, italic, strike: true, ..Default::default() });
-                i += 2;
+                i = if closed { i + 2 } else { chars.len() };
             }
-            _ if c == '*' || c == '_' => {
+            // emphasis: '_' between word chars (snake_case) is NOT a delimiter
+            _ if c == '*' || (c == '_' && !between_word(&chars, i)) => {
                 push(&mut spans, &mut buf, bold, italic);
                 italic = !italic;
                 i += 1;
@@ -217,6 +256,17 @@ fn parse_inline(s: &str) -> Vec<Span> {
                 let text: String = chars[start..i].iter().collect();
                 spans.push(Span { text, mono: true, color: Some(dv_ir::Color { r: 0xc7, g: 0x25, b: 0x4e, a: 255 }), ..Default::default() });
                 i += 1;
+            }
+            // image ![alt](url) -> render the alt text (no url in a viewer)
+            _ if c == '!' && chars.get(i + 1) == Some(&'[') => {
+                if let Some((text, consumed)) = parse_link(&chars[i + 1..]) {
+                    push(&mut spans, &mut buf, bold, italic);
+                    spans.push(Span { text, bold, italic, color: Some(dv_ir::Color { r: 0x6a, g: 0x6f, b: 0x76, a: 255 }), ..Default::default() });
+                    i += 1 + consumed;
+                } else {
+                    buf.push(c);
+                    i += 1;
+                }
             }
             _ if c == '[' => {
                 // [text](url) -> render text as a link (url dropped in a viewer)
@@ -240,6 +290,14 @@ fn parse_inline(s: &str) -> Vec<Span> {
         spans.push(Span::new(""));
     }
     spans
+}
+
+/// True when `chars[i]` sits between two alphanumerics (e.g. `_` in snake_case),
+/// where `_` must not act as an emphasis delimiter (CommonMark intraword rule).
+fn between_word(chars: &[char], i: usize) -> bool {
+    let prev = i.checked_sub(1).and_then(|j| chars.get(j)).map(|c| c.is_alphanumeric()).unwrap_or(false);
+    let next = chars.get(i + 1).map(|c| c.is_alphanumeric()).unwrap_or(false);
+    prev && next
 }
 
 /// Parse `[text](url)` starting at `chars[0] == '['`; returns (text, chars consumed).

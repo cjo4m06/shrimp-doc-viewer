@@ -76,6 +76,9 @@ class ImageViewer {
       this.natH = this.img.naturalHeight || 1;
       if (this.fitMode) this.fitWidth();
       else this._apply();
+      // the bitmap is decoded into the <img>; free the blob URL (no leak on re-mount)
+      URL.revokeObjectURL(this.url);
+      this._revoked = true;
     };
     this.img.src = this.url;
     this.scroll.appendChild(this.img);
@@ -111,6 +114,6 @@ class ImageViewer {
   }
 
   destroy() {
-    URL.revokeObjectURL(this.url);
+    if (!this._revoked) URL.revokeObjectURL(this.url);
   }
 }

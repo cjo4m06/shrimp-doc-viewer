@@ -8,3 +8,4 @@ description = "RTF parser -> dv-flow blocks."
 [dependencies]
 dv-flow.workspace = true
 dv-ir.workspace = true
+encoding_rs = "0.8"

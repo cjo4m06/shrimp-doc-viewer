@@ -155,14 +155,21 @@ impl XlsxBook {
         XlsxBook { bytes: Vec::new(), font, names: vec!["CSV".to_string()], opts, cache }
     }
 
-    /// Build a single-sheet grid book from an ODS spreadsheet (first table).
+    /// Build a grid book from an ODS spreadsheet — every sheet becomes a tab.
     #[wasm_bindgen(js_name = fromOds)]
     pub fn from_ods(bytes: Vec<u8>, font: Vec<u8>) -> XlsxBook {
         let opts = dv_xlsx::Options::default();
-        let sheet = dv_xlsx::Sheet::from_rows(dv_odf::parse_spreadsheet_rows(&bytes), &opts);
         let mut cache = HashMap::new();
-        cache.insert(0usize, sheet);
-        XlsxBook { bytes: Vec::new(), font, names: vec!["Sheet1".to_string()], opts, cache }
+        let mut names = Vec::new();
+        for (i, (name, rows)) in dv_odf::parse_spreadsheet(&bytes).into_iter().enumerate() {
+            names.push(if name.is_empty() { format!("Sheet{}", i + 1) } else { name });
+            cache.insert(i, dv_xlsx::Sheet::from_rows(rows, &opts));
+        }
+        if names.is_empty() {
+            names.push("Sheet1".to_string());
+            cache.insert(0, dv_xlsx::Sheet::from_rows(Vec::new(), &opts));
+        }
+        XlsxBook { bytes: Vec::new(), font, names, opts, cache }
     }
 
     #[wasm_bindgen(js_name = sheetNames)]
