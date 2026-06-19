@@ -1,25 +1,10 @@
-// Plain-text / Markdown frontend. The bytes are parsed (markdown by default — a
-// superset that also renders plain prose well) into a paginated rich-text flow and
-// shown in the same page viewer as DOCX.
+// Plain-text / Markdown frontend. Parsed (markdown by default — a superset that
+// also renders plain prose well) into a paginated rich-text flow and shown in the
+// same page viewer as DOCX, with rasterization in the render Worker.
 
 import { init } from "./index.js";
-import { FlowDoc } from "../wasm/dv_wasm.js";
-import { DocxViewer } from "./docx.js";
-
-async function fontParts(opts) {
-  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
-  if (!fontUrl) throw new Error("provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
-  const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
-  const extra = [];
-  for (const [name, src] of Object.entries(opts.fonts || {})) {
-    let u8;
-    if (src instanceof Uint8Array) u8 = src;
-    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
-    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
-    extra.push([name, u8]);
-  }
-  return { fontBytes, extra };
-}
+import { DocxViewer, resolveFontMap } from "./docx.js";
+import { WorkerDoc } from "./worker-doc.js";
 
 /**
  * Mount a Markdown / plain-text viewer into `container`.
@@ -28,7 +13,10 @@ async function fontParts(opts) {
  */
 export async function renderTextInto(container, bytes, opts = {}) {
   await init();
-  const { fontBytes, extra } = await fontParts(opts);
-  const doc = opts.plain ? FlowDoc.fromText(bytes, fontBytes, extra) : FlowDoc.fromMarkdown(bytes, fontBytes, extra);
+  const fontUrl = opts.fontUrl || opts.cjkFallbackFontUrl;
+  if (!fontUrl) throw new Error("renderTextInto: provide opts.fontUrl (a CJK-capable font).");
+  const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
+  const extra = await resolveFontMap(opts.fonts);
+  const doc = await WorkerDoc.open(opts.plain ? "text" : "markdown", bytes, fontBytes, extra);
   return new DocxViewer(container, doc, opts);
 }

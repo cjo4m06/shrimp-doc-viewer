@@ -3,9 +3,22 @@
 // JS virtualizes pages (render only near the viewport, free the rest) + zoom.
 
 import { init } from "./index.js";
-import { DocxDoc } from "../wasm/dv_wasm.js";
+import { WorkerDoc } from "./worker-doc.js";
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/** Resolve an `opts.fonts` map (family -> URL|Uint8Array|ArrayBuffer) to [name, Uint8Array] pairs. */
+export async function resolveFontMap(fonts) {
+  const extra = [];
+  for (const [name, src] of Object.entries(fonts || {})) {
+    let u8;
+    if (src instanceof Uint8Array) u8 = src;
+    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
+    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
+    extra.push([name, u8]);
+  }
+  return extra;
+}
 
 /**
  * Mount a virtualized DOCX viewer into `container`.
@@ -24,16 +37,8 @@ export async function renderDocxInto(container, bytes, opts = {}) {
     throw new Error("renderDocxInto: provide opts.fontUrl (a CJK-capable font, e.g. Noto Sans TC).");
   }
   const fontBytes = new Uint8Array(await (await fetch(fontUrl)).arrayBuffer());
-  // Resolve the caller font map (family name -> bytes) into [name, Uint8Array] pairs.
-  const extra = [];
-  for (const [name, src] of Object.entries(opts.fonts || {})) {
-    let u8;
-    if (src instanceof Uint8Array) u8 = src;
-    else if (src instanceof ArrayBuffer) u8 = new Uint8Array(src);
-    else u8 = new Uint8Array(await (await fetch(src)).arrayBuffer());
-    extra.push([name, u8]);
-  }
-  const doc = new DocxDoc(bytes, fontBytes, extra);
+  const extra = await resolveFontMap(opts.fonts);
+  const doc = await WorkerDoc.open("docx", bytes, fontBytes, extra);
   return new DocxViewer(container, doc, opts);
 }
 
@@ -49,8 +54,8 @@ export class DocxViewer {
     this.onZoom = opts.onZoom;
     this.pageEls = [];
     this.rendered = new Set();
-    this._queue = []; // pages waiting to rasterize (one per frame, so no batch freeze)
-    this._rv = 0;
+    this._inflight = new Set(); // pages whose render is in the worker
+    this._zoomToken = 0; // bumped on zoom; stale worker results are discarded
 
     container.replaceChildren();
     this._build(container);
@@ -105,43 +110,36 @@ export class DocxViewer {
   _onIntersect(entries) {
     for (const e of entries) {
       const i = Number(e.target.dataset.page);
-      if (e.isIntersecting) this._enqueue(i);
+      if (e.isIntersecting) this._renderPage(i);
       else this._evict(i);
     }
   }
 
-  // Rasterize at most one page per animation frame so a batch (e.g. the many pages
-  // visible after zooming out) never freezes the main thread in one go.
-  _enqueue(i) {
-    if (this.rendered.has(i) || this._queue.includes(i)) return;
-    this._queue.push(i);
-    this._pump();
-  }
-
-  _pump() {
-    if (this._rv) return;
-    this._rv = requestAnimationFrame(() => {
-      this._rv = 0;
-      let i;
-      while ((i = this._queue.shift()) !== undefined && (this.rendered.has(i) || !this._isNear(i))) {}
-      if (i !== undefined) this._renderPage(i);
-      if (this._queue.length) this._pump();
-    });
-  }
-
+  // Rasterization happens in the render Worker (off the UI thread); the main thread
+  // only fires a request and blits the returned ImageBitmap, so nothing here blocks.
   _renderPage(i) {
-    if (this.rendered.has(i)) return;
+    if (this.rendered.has(i) || this._inflight.has(i)) return;
     const scale = this.zoom * this.dpr;
-    const img = this.doc.renderPage(i, scale);
-    const w = img.width, h = img.height, data = img.takeData();
-    img.free();
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    canvas.style.cssText = `width:${w / this.dpr}px;height:${h / this.dpr}px;display:block`;
-    canvas.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(data), w, h), 0, 0);
-    this.pageEls[i].replaceChildren(canvas);
-    this.rendered.add(i);
+    const token = this._zoomToken; // discard results that arrive after a later zoom
+    this._inflight.add(i);
+    this.doc.renderPage(i, scale).then(
+      (m) => {
+        this._inflight.delete(i);
+        if (token !== this._zoomToken || !this._isNear(i)) {
+          m.bitmap.close();
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = m.w;
+        canvas.height = m.h;
+        canvas.style.cssText = `width:${m.w / this.dpr}px;height:${m.h / this.dpr}px;display:block`;
+        canvas.getContext("2d").drawImage(m.bitmap, 0, 0);
+        m.bitmap.close();
+        this.pageEls[i]?.replaceChildren(canvas);
+        this.rendered.add(i);
+      },
+      () => this._inflight.delete(i),
+    );
   }
 
   _evict(i) {
@@ -157,7 +155,7 @@ export class DocxViewer {
   }
 
   _renderVisible() {
-    for (let i = 0; i < this.pageCount; i++) if (this._isNear(i)) this._enqueue(i);
+    for (let i = 0; i < this.pageCount; i++) if (this._isNear(i)) this._renderPage(i);
   }
 
   setZoom(z) {
@@ -166,6 +164,7 @@ export class DocxViewer {
     const scroller = document.scrollingElement || document.documentElement;
     const frac = scroller.scrollTop / Math.max(1, scroller.scrollHeight);
     this.zoom = next;
+    this._zoomToken++; // in-flight worker renders for the old zoom are now stale
     this._applyGeometry();
     // Instant feedback: CSS-scale the already-rendered canvases (cheap GPU
     // transform) instead of re-rasterizing on every wheel tick.
@@ -182,7 +181,6 @@ export class DocxViewer {
     // Re-rasterize crisply once zooming settles (coalesces rapid ticks).
     clearTimeout(this._zt);
     this._zt = setTimeout(() => {
-      this._queue = []; // drop stale (pre-zoom) render requests
       for (const i of [...this.rendered]) this._evict(i);
       this._renderVisible();
     }, 160);
@@ -201,9 +199,9 @@ export class DocxViewer {
 
   destroy() {
     this._observer?.disconnect();
-    if (this._rv) cancelAnimationFrame(this._rv);
     clearTimeout(this._zt);
     this.pages.removeEventListener("wheel", this._wheel);
+    this.doc?.destroy?.(); // terminate the render worker
     this.pages.parentElement?.replaceChildren?.();
   }
 }
