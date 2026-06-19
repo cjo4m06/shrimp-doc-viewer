@@ -246,6 +246,9 @@ struct DShape {
     fill: Option<Color>,
     outline: Option<(Color, f32)>,
     rounded: bool, // roundRect / callout -> rounded corners
+    callout: bool, // wedge*Callout -> rounded body + a pointer tail
+    adj1: f32,     // pointer tip x offset from centre, as a fraction of w
+    adj2: f32,     // pointer tip y offset from centre, as a fraction of h
     is_line: bool, // connector -> stroke a diagonal
     flip_v: bool,  // xfrm flipV -> diagonal runs bottom-left to top-right
     flip_h: bool,
@@ -668,12 +671,12 @@ fn parse_document(xml: &str) -> Document {
                         pos_target = if pos_target >= 20 { 2 } else { 1 };
                     }
                     b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     // A picture INSIDE a group: treat it as a shape drawn at its own box
                     // (so it isn't stretched to the whole group's extent).
                     b"pic:pic" if cur_float.is_some() && gstack.len() > 1 && cur_dshape.is_none() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     b"wpg:grpSpPr" if cur_float.is_some() => {
                         in_grpspr = !is_empty;
@@ -721,7 +724,23 @@ fn parse_document(xml: &str) -> Document {
                         if let Some(s) = cur_dshape.as_mut() {
                             let prst = get_attr(&e, b"prst").unwrap_or_default();
                             s.rounded = prst.contains("ound") || prst.contains("allout");
+                            s.callout = prst.contains("allout");
                             s.is_line = prst.contains("onnector") || prst == "line";
+                        }
+                    }
+                    b"a:gd" if cur_float.is_some() => {
+                        // callout pointer adjustment guides (val is thousandths of a percent)
+                        if let Some(s) = cur_dshape.as_mut() {
+                            if s.callout {
+                                let name = get_attr(&e, b"name").unwrap_or_default();
+                                if let Some(v) = get_attr(&e, b"fmla").and_then(|f| f.strip_prefix("val ").and_then(|n| n.parse::<f32>().ok())) {
+                                    if name == "adj1" {
+                                        s.adj1 = v / 100000.0;
+                                    } else if name == "adj2" {
+                                        s.adj2 = v / 100000.0;
+                                    }
+                                }
+                            }
                         }
                     }
                     b"a:ln" if cur_float.is_some() => in_dln = !is_empty,
@@ -2227,7 +2246,45 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
             continue;
         }
         if sh.rounded {
-            // Callout / roundRect: one rounded path, filled then stroked.
+            // Callout: draw the pointer tail first (under the body) so the body's
+            // rounded edge sits cleanly over the tail's base.
+            if sh.callout {
+                if let Some(c) = sh.fill {
+                    let (cx, cy) = (sx + sh.w / 2.0, sy + sh.h / 2.0);
+                    let (tipx, tipy) = (cx + sh.adj1 * sh.w, cy + sh.adj2 * sh.h);
+                    // base centred on the nearest edge to the tip, small width
+                    let bw = (sh.w.min(sh.h) * 0.3).max(6.0);
+                    let (b1, b2);
+                    if tipy > sy + sh.h {
+                        let bx = tipx.clamp(sx + bw, sx + sh.w - bw);
+                        (b1, b2) = ((bx - bw / 2.0, sy + sh.h), (bx + bw / 2.0, sy + sh.h));
+                    } else if tipy < sy {
+                        let bx = tipx.clamp(sx + bw, sx + sh.w - bw);
+                        (b1, b2) = ((bx - bw / 2.0, sy), (bx + bw / 2.0, sy));
+                    } else if tipx > sx + sh.w {
+                        let by = tipy.clamp(sy + bw, sy + sh.h - bw);
+                        (b1, b2) = ((sx + sh.w, by - bw / 2.0), (sx + sh.w, by + bw / 2.0));
+                    } else {
+                        let by = tipy.clamp(sy + bw, sy + sh.h - bw);
+                        (b1, b2) = ((sx, by - bw / 2.0), (sx, by + bw / 2.0));
+                    }
+                    let mut tp = dv_ir::PathData::new();
+                    tp.move_to(b1.0 * scale, b1.1 * scale);
+                    tp.line_to(tipx * scale, tipy * scale);
+                    tp.line_to(b2.0 * scale, b2.1 * scale);
+                    tp.close();
+                    dl.push(Command::FillPath { path: tp.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+                    if let Some((oc, w)) = sh.outline {
+                        // stroke only the two slanted sides (not the base, which the body covers)
+                        let mut e1 = dv_ir::PathData::new();
+                        e1.move_to(b1.0 * scale, b1.1 * scale);
+                        e1.line_to(tipx * scale, tipy * scale);
+                        e1.line_to(b2.0 * scale, b2.1 * scale);
+                        dl.push(Command::StrokePath { path: e1, paint: Paint::Solid(oc), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+                    }
+                }
+            }
+            // Callout / roundRect body: one rounded path, filled then stroked.
             let r = (sh.w.min(sh.h) * 0.22).min(12.0) * scale;
             let path = round_rect_path(sx * scale, sy * scale, sh.w * scale, sh.h * scale, r);
             if let Some(c) = sh.fill {
