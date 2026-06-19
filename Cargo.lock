@@ -172,6 +172,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dv-flow"
+version = "0.0.0"
+dependencies = [
+ "dv-ir",
+ "dv-text",
+]
+
+[[package]]
 name = "dv-image"
 version = "0.0.0"
 dependencies = [
@@ -182,6 +190,24 @@ dependencies = [
 [[package]]
 name = "dv-ir"
 version = "0.0.0"
+
+[[package]]
+name = "dv-md"
+version = "0.0.0"
+dependencies = [
+ "dv-flow",
+ "dv-ir",
+]
+
+[[package]]
+name = "dv-odf"
+version = "0.0.0"
+dependencies = [
+ "dv-flow",
+ "dv-ir",
+ "quick-xml",
+ "zip",
+]
 
 [[package]]
 name = "dv-pptx"
@@ -205,6 +231,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dv-rtf"
+version = "0.0.0"
+dependencies = [
+ "dv-flow",
+ "dv-ir",
+]
+
+[[package]]
 name = "dv-text"
 version = "0.0.0"
 dependencies = [
@@ -219,9 +253,13 @@ version = "0.0.0"
 dependencies = [
  "console_error_panic_hook",
  "dv-docx",
+ "dv-flow",
  "dv-ir",
+ "dv-md",
+ "dv-odf",
  "dv-pptx",
  "dv-render",
+ "dv-rtf",
  "dv-text",
  "dv-xlsx",
  "js-sys",

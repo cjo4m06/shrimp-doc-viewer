@@ -15,6 +15,10 @@ dv-render.workspace = true
 dv-xlsx.workspace = true
 dv-docx.workspace = true
 dv-pptx.workspace = true
+dv-flow.workspace = true
+dv-md.workspace = true
+dv-rtf.workspace = true
+dv-odf.workspace = true
 wasm-bindgen = "=0.2.125"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"

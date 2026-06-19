@@ -12,9 +12,13 @@ members = [
     "crates/dv-text",
     "crates/dv-render",
     "crates/dv-image",
+    "crates/dv-flow",
     "crates/dv-xlsx",
     "crates/dv-docx",
     "crates/dv-pptx",
+    "crates/dv-rtf",
+    "crates/dv-md",
+    "crates/dv-odf",
     "crates/dv-wasm",
 ]
 
@@ -30,9 +34,13 @@ dv-ir = { path = "crates/dv-ir" }
 dv-text = { path = "crates/dv-text" }
 dv-render = { path = "crates/dv-render" }
 dv-image = { path = "crates/dv-image" }
+dv-flow = { path = "crates/dv-flow" }
 dv-xlsx = { path = "crates/dv-xlsx" }
 dv-docx = { path = "crates/dv-docx" }
 dv-pptx = { path = "crates/dv-pptx" }
+dv-rtf = { path = "crates/dv-rtf" }
+dv-md = { path = "crates/dv-md" }
+dv-odf = { path = "crates/dv-odf" }
 
 # Raster backend: pure-Rust, CPU, Skia-grade analytic AA. ~200-300KB in wasm.
 tiny-skia = "0.11"

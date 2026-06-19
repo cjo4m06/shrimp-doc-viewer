@@ -55,37 +55,63 @@ async function toBytes(source) {
 }
 
 /**
- * Distinguish an OOXML zip (docx/xlsx/pptx) by the part names stored in the zip.
- * Zip filenames sit uncompressed in the local headers, so a raw byte scan works.
+ * Distinguish a zip-based document (OOXML docx/xlsx/pptx OR ODF odt/ods/odp) by
+ * the part names stored in the zip. Zip filenames sit uncompressed in the local
+ * headers, so a raw byte scan works.
  */
 export function sniffOoxml(bytes) {
-  const text = new TextDecoder("latin1").decode(bytes);
+  const text = new TextDecoder("latin1").decode(bytes.subarray(0, 8192));
   if (text.includes("xl/workbook.xml")) return "xlsx";
   if (text.includes("word/document.xml")) return "docx";
   if (text.includes("ppt/presentation.xml")) return "pptx";
+  // ODF: a "mimetype" entry declares the subtype near the very start of the zip.
+  if (text.includes("opendocument.spreadsheet")) return "ods";
+  if (text.includes("opendocument.text")) return "odt";
+  if (text.includes("opendocument.presentation")) return "odp";
   return "ooxml";
 }
 
-/** Detect document format from magic bytes. */
+/** Distinguish delimited tabular text (csv) from prose (markdown / plain text). */
+function looksTabular(bytes) {
+  const text = new TextDecoder("utf-8").decode(bytes.subarray(0, 8192));
+  const lines = text.split(/\r?\n/).filter((l) => l.trim()).slice(0, 12);
+  if (lines.length < 2) return false;
+  for (const delim of [",", "\t", ";"]) {
+    const counts = lines.map((l) => l.split(delim).length - 1);
+    const withDelim = counts.filter((n) => n >= 1).length;
+    // most lines have the delimiter and a consistent field count -> a table
+    if (withDelim >= lines.length * 0.7) {
+      const max = Math.max(...counts);
+      const consistent = counts.filter((n) => n === max || n === max - 1).length;
+      if (max >= 1 && consistent >= lines.length * 0.7) return true;
+    }
+  }
+  return false;
+}
+
+/** Detect document format from magic bytes / content. */
 export function sniffFormat(bytes) {
-  if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
-    return "pdf"; // %PDF
+  const m = (i, ...sig) => sig.every((b, k) => bytes[i + k] === b);
+  if (m(0, 0x25, 0x50, 0x44, 0x46)) return "pdf"; // %PDF
+  if (m(0, 0x50, 0x4b, 0x03, 0x04)) return "zip"; // PK.. (OOXML or ODF)
+  if (m(0, 0xd0, 0xcf, 0x11, 0xe0)) return "ole"; // legacy .doc/.xls/.ppt
+  if (m(0, 0x89, 0x50, 0x4e, 0x47) || m(0, 0xff, 0xd8, 0xff) || m(0, 0x47, 0x49, 0x46) || m(0, 0x42, 0x4d) || (m(0, 0x52, 0x49, 0x46, 0x46) && m(8, 0x57, 0x45, 0x42, 0x50))) {
+    return "image";
   }
-  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
-    return "ooxml"; // PK.. (docx/xlsx/pptx zip) — distinguished by [Content_Types].xml later
-  }
-  if (bytes.length >= 4 && bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0) {
-    return "ole"; // legacy .doc/.xls/.ppt compound file
-  }
-  // No binary magic: if it's plausibly text (no NULs, few control bytes), treat
-  // it as delimited text (CSV / TSV / semicolon).
+  // text-based formats
+  const head = new TextDecoder("utf-8").decode(bytes.subarray(0, 512));
+  const trimmed = head.replace(/^﻿/, "").trimStart();
+  if (trimmed.startsWith("{\\rtf")) return "rtf";
+  if (trimmed.toLowerCase().startsWith("<svg") || /<\?xml[^>]*>\s*<svg/i.test(trimmed)) return "image"; // svg
   const sample = bytes.subarray(0, 4096);
   let ctrl = 0;
   for (const b of sample) {
     if (b === 0) return "unknown";
     if (b < 9 || (b > 13 && b < 32)) ctrl++;
   }
-  if (sample.length > 0 && ctrl < sample.length * 0.05) return "csv";
+  if (sample.length > 0 && ctrl < sample.length * 0.05) {
+    return looksTabular(bytes) ? "csv" : "text"; // text = markdown / plain text
+  }
   return "unknown";
 }
 
@@ -103,35 +129,39 @@ export function sniffFormat(bytes) {
  */
 export async function mount(target, source, options = {}) {
   const bytes = await toBytes(source);
-  const format = options.format || sniffFormat(bytes);
-  if (format === "pdf") {
-    const { renderPdfInto } = await import("./pdf.js");
-    return renderPdfInto(target, bytes, options);
+  let format = options.format || sniffFormat(bytes);
+  if (format === "zip") format = sniffOoxml(bytes); // resolve OOXML/ODF subtype
+
+  switch (format) {
+    case "pdf":
+      return (await import("./pdf.js")).renderPdfInto(target, bytes, options);
+    case "image":
+      return (await import("./image.js")).renderImageInto(target, bytes, options);
+    case "csv":
+      return (await import("./csv.js")).renderCsvInto(target, bytes, options);
+    case "text":
+    case "markdown":
+    case "md":
+      return (await import("./text.js")).renderTextInto(target, bytes, options);
+    case "rtf":
+      return (await import("./rtf.js")).renderRtfInto(target, bytes, options);
+    case "xlsx":
+      return (await import("./xlsx.js")).renderXlsxInto(target, bytes, options);
+    case "docx":
+      return (await import("./docx.js")).renderDocxInto(target, bytes, options);
+    case "pptx":
+      return (await import("./pptx.js")).renderPptxInto(target, bytes, options);
+    case "odt":
+    case "ods":
+    case "odp":
+      return (await import("./odf.js")).renderOdfInto(target, bytes, { ...options, odfKind: format });
+    default:
+      throw new Error(
+        `doc-viewer.mount(): detected "${format}" — supported: PDF · DOCX · XLSX · PPTX · ` +
+          `CSV · TXT/Markdown · RTF · ODF (odt/ods/odp) · images. ` +
+          `Legacy binary (.doc/.xls/.ppt) is out of scope (convert server-side).`
+      );
   }
-  if (format === "csv") {
-    const { renderCsvInto } = await import("./csv.js");
-    return renderCsvInto(target, bytes, options);
-  }
-  if (format === "ooxml") {
-    const sub = sniffOoxml(bytes);
-    if (sub === "xlsx") {
-      const { renderXlsxInto } = await import("./xlsx.js");
-      return renderXlsxInto(target, bytes, options);
-    }
-    if (sub === "docx") {
-      const { renderDocxInto } = await import("./docx.js");
-      return renderDocxInto(target, bytes, options);
-    }
-    if (sub === "pptx") {
-      const { renderPptxInto } = await import("./pptx.js");
-      return renderPptxInto(target, bytes, options);
-    }
-    throw new Error(`doc-viewer.mount(): detected "${sub}" — PDF, XLSX, DOCX and PPTX are wired.`);
-  }
-  throw new Error(
-    `doc-viewer.mount(): detected "${format}" — supported: PDF, XLSX, DOCX, PPTX, CSV. ` +
-      `Legacy binary (.doc/.xls/.ppt) is out of scope.`
-  );
 }
 
 export { wasmVersion as coreVersion };

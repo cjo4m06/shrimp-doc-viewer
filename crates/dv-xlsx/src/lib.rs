@@ -203,7 +203,11 @@ impl Sheet {
     /// merges; cells that parse as numbers right-align, columns auto-size to content.
     /// Reuses the same viewport renderer as xlsx.
     pub fn from_csv(bytes: &[u8], opts: &Options) -> Sheet {
-        let rows = parse_delimited(bytes);
+        Sheet::from_rows(parse_delimited(bytes), opts)
+    }
+
+    /// Build a grid sheet from already-parsed rows of strings (CSV, ODS, …).
+    pub fn from_rows(rows: Vec<Vec<String>>, opts: &Options) -> Sheet {
         let n_rows = rows.len().clamp(1, opts.max_rows) as u32;
         let n_cols = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, opts.max_cols) as u32;
 

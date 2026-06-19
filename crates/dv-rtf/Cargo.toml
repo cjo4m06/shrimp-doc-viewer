@@ -1,0 +1,10 @@
+[package]
+name = "dv-rtf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RTF parser -> dv-flow blocks."
+
+[dependencies]
+dv-flow.workspace = true
+dv-ir.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "dv-flow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight rich-text flow layout (markdown / txt / rtf / odt) -> paginated display list."
+
+[dependencies]
+dv-ir.workspace = true
+dv-text.workspace = true

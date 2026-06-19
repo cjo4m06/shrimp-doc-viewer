@@ -37,7 +37,7 @@ export async function renderDocxInto(container, bytes, opts = {}) {
   return new DocxViewer(container, doc, opts);
 }
 
-class DocxViewer {
+export class DocxViewer {
   constructor(container, doc, opts) {
     this.doc = doc;
     this.pageCount = doc.pageCount();

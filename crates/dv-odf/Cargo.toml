@@ -1,0 +1,12 @@
+[package]
+name = "dv-odf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenDocument (odt/ods/odp) -> dv-flow blocks / grid rows."
+
+[dependencies]
+dv-flow.workspace = true
+dv-ir.workspace = true
+quick-xml = "0.31"
+zip = { version = "2", default-features = false, features = ["deflate"] }

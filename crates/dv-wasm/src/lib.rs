@@ -155,6 +155,16 @@ impl XlsxBook {
         XlsxBook { bytes: Vec::new(), font, names: vec!["CSV".to_string()], opts, cache }
     }
 
+    /// Build a single-sheet grid book from an ODS spreadsheet (first table).
+    #[wasm_bindgen(js_name = fromOds)]
+    pub fn from_ods(bytes: Vec<u8>, font: Vec<u8>) -> XlsxBook {
+        let opts = dv_xlsx::Options::default();
+        let sheet = dv_xlsx::Sheet::from_rows(dv_odf::parse_spreadsheet_rows(&bytes), &opts);
+        let mut cache = HashMap::new();
+        cache.insert(0usize, sheet);
+        XlsxBook { bytes: Vec::new(), font, names: vec!["Sheet1".to_string()], opts, cache }
+    }
+
     #[wasm_bindgen(js_name = sheetNames)]
     pub fn sheet_names(&self) -> Vec<String> {
         self.names.clone()
@@ -303,6 +313,80 @@ impl DocxDoc {
     pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
         let dl = self.doc.render_page(idx, scale);
         let rgba = render(&dl, &self.registry);
+        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    }
+}
+
+/// Parse the JS `[name, Uint8Array]` caller-font pairs into named FontData.
+fn parse_extra_fonts(extra: js_sys::Array) -> Vec<(String, FontData)> {
+    use wasm_bindgen::JsCast;
+    let mut out = Vec::new();
+    for v in extra.iter() {
+        if let Ok(pair) = v.dyn_into::<js_sys::Array>() {
+            let name = pair.get(0).as_string().unwrap_or_default();
+            if let Ok(arr) = pair.get(1).dyn_into::<js_sys::Uint8Array>() {
+                if !name.is_empty() {
+                    out.push((name, FontData::new(arr.to_vec())));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A paginated rich-text flow document (Markdown / plain text / RTF / ODT / ODP),
+/// rendered page-by-page through the same viewer as DOCX.
+#[wasm_bindgen]
+pub struct FlowDoc {
+    doc: dv_flow::FlowDoc,
+    registry: FontRegistry,
+}
+
+fn build_flow(blocks: Vec<dv_flow::Block>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+    let fonts = dv_text::Fonts::new(FontData::new(font), parse_extra_fonts(extra));
+    let doc = dv_flow::FlowDoc::new(&blocks, fonts);
+    let mut registry = FontRegistry::new();
+    for (i, fd) in doc.fonts().data().iter().enumerate() {
+        registry.insert(FontId(i as u32), fd.clone());
+    }
+    FlowDoc { doc, registry }
+}
+
+#[wasm_bindgen]
+impl FlowDoc {
+    #[wasm_bindgen(js_name = fromMarkdown)]
+    pub fn from_markdown(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+        build_flow(dv_md::parse_markdown(&String::from_utf8_lossy(&bytes)), font, extra)
+    }
+    #[wasm_bindgen(js_name = fromText)]
+    pub fn from_text(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+        build_flow(dv_md::parse_text(&String::from_utf8_lossy(&bytes)), font, extra)
+    }
+    #[wasm_bindgen(js_name = fromRtf)]
+    pub fn from_rtf(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+        build_flow(dv_rtf::parse(&bytes), font, extra)
+    }
+    #[wasm_bindgen(js_name = fromOdt)]
+    pub fn from_odt(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+        build_flow(dv_odf::parse_text(&bytes), font, extra)
+    }
+    #[wasm_bindgen(js_name = fromOdp)]
+    pub fn from_odp(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
+        build_flow(dv_odf::parse_presentation(&bytes), font, extra)
+    }
+
+    #[wasm_bindgen(js_name = pageCount)]
+    pub fn page_count(&self) -> usize {
+        self.doc.page_count()
+    }
+    #[wasm_bindgen(js_name = pageSize)]
+    pub fn page_size(&self) -> Vec<f32> {
+        let (w, h) = self.doc.page_size();
+        vec![w, h]
+    }
+    #[wasm_bindgen(js_name = renderPage)]
+    pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
+        let rgba = render(&self.doc.render_page(idx, scale), &self.registry);
         RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
     }
 }

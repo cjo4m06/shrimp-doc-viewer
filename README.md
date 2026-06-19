@@ -1,9 +1,10 @@
 # doc-viewer
 
-A browser, **viewer-only**, high-fidelity multi-format document viewer (PDF / Word
-/ Excel / PowerPoint / CSV). The rendering core is written in **Rust** and compiled
-to **WebAssembly**; it is shipped as a **pure-JS npm library** (`await init()` →
-`mount(...)`). No server, no editing, no plugins to install in the page.
+A browser, **viewer-only**, high-fidelity multi-format document viewer. Supported:
+**PDF · DOCX · XLSX · PPTX · CSV · TXT/Markdown · RTF · ODF (odt/ods/odp) · images**.
+The rendering core is written in **Rust** and compiled to **WebAssembly**; it is
+shipped as a **pure-JS npm library** (`await init()` → `mount(...)`). No server, no
+editing, no plugins to install in the page.
 
 > Status (verified in-browser):
 > - **PDF — complete.** PDFium-WASM via `mount()`; embedded + non-embedded CJK,
@@ -13,6 +14,15 @@ to **WebAssembly**; it is shipped as a **pure-JS npm library** (`await init()` �
 > - **CSV — complete.** RFC-4180 parser (quoted fields, embedded delimiters/newlines,
 >   `""` escapes; auto-detects comma / tab / semicolon) → reuses the XLSX grid viewer
 >   (virtualization + zoom; numbers right-align, columns auto-size).
+> - **TXT / Markdown — complete.** Markdown subset (ATX headings, fenced/indented
+>   code, blockquotes, ordered/unordered nested lists, rules, inline
+>   `**bold** *italic* `code` ~~strike~~ [links]`) → paginated rich-text flow.
+> - **RTF — complete (viewer-grade).** Groups, `\b \i \ul \strike \fs \cf`(+colortbl),
+>   `\par`, Unicode `\uN`/`\'hh`; skips fonttbl/stylesheet/pict.
+> - **ODF — complete (viewer-grade).** ODT (headings/paragraphs/lists) + ODP
+>   (per-slide text) render in the flow viewer; ODS reuses the XLSX grid.
+> - **Images — complete.** PNG/JPEG/GIF/WebP/BMP/SVG via the browser's native
+>   decoder; zoom + fit-to-width (no WASM).
 > - **DOCX — complete (viewer-grade).** Self-written flow layout: **paginated,
 >   virtualized, zoomable** viewer; styles.xml inheritance; lists/numbering;
 >   **tables** (borders/shading/gridSpan/**true vMerge spanning**/vAlign); **headers/
@@ -43,6 +53,9 @@ small payload · responsiveness (即時).
 | **PDF** | Embed **PDFium-WASM** (BSD, Chrome's engine — healthiest possible, ~few MB, ms-fast, mature CJK fallback) | **High** |
 | **XLSX / DOCX / PPTX** | **Own Rust renderers** over healthy parsers (`calamine`/`quick-xml`/`zip`); no healthy render lib exists, so we write it | 80–90% on typical docs (never pixel-parity with Office) |
 | **CSV** | **Own Rust parser** (RFC 4180) reusing the XLSX grid renderer | **High** |
+| **TXT/MD/RTF/ODT/ODP** | **Own Rust parsers** lowering into a shared rich-text flow renderer (`dv-flow`) | High (text/structure; not source styling) |
+| **ODS** | **Own Rust parser** reusing the XLSX grid | **High** |
+| **Images** | Browser-native decode (PNG/JPEG/GIF/WebP/BMP/SVG) | **High** |
 | Legacy `.doc/.xls/.ppt`, MS-parity | Only LibreOffice-WASM delivers it (~250MB, slow boot) — **dropped** on size/speed; defer or server-side convert | — |
 
 The **shared geba is the real asset**: every format lowers into one display-list and
@@ -56,9 +69,13 @@ crates/
   dv-text     text/font stack: shaping (rustybuzz) + outlines (skrifa) + multi-font selection
   dv-render   tiny-skia CPU raster backend: DisplayList -> straight RGBA
   dv-image    PNG/JPEG decode -> straight RGBA
-  dv-xlsx     XLSX grid model + viewport renderer (also powers CSV via Sheet::from_csv)
+  dv-flow     shared rich-text flow renderer (markdown/txt/rtf/odt/odp -> pages)
+  dv-xlsx     XLSX grid model + viewport renderer (also powers CSV + ODS)
   dv-docx     DOCX flow layout + pagination
   dv-pptx     PPTX DrawingML engine
+  dv-md       Markdown + plain-text parser -> dv-flow
+  dv-rtf      RTF parser -> dv-flow
+  dv-odf      OpenDocument (odt/ods/odp) -> dv-flow / grid rows
   dv-wasm     wasm-bindgen bindings -> the WASM core
 packages/
   doc-viewer  the npm package: pure-JS API (init/mount) + generated wasm glue
@@ -240,6 +257,14 @@ viewer.zoomIn();          // also zoomOut(), setZoom(1.5), fitWidth(); Ctrl/⌘-
   embedded delimiters/newlines, `""` escapes, comma/tab/semicolon auto-detect; numbers
   right-align, columns auto-size) reusing the XLSX viewport renderer + viewer. `mount()`
   sniffs non-binary text → CSV (or force with `{ format: "csv" }`).
+- **M7 — text/markdown · RTF · ODF · images ✅.**
+  - `dv-flow`: a shared rich-text flow renderer — block model (headings, paragraphs,
+    nested lists, code, quotes, rules) + styled inline spans → paginated pages painted
+    through the shared geba; reuses the DOCX page viewer.
+  - `dv-md` (Markdown + plain text), `dv-rtf` (control words + colortbl + Unicode),
+    `dv-odf` (ODT/ODP text → flow; ODS → grid rows) lower into `dv-flow` / the grid.
+  - Images: browser-native decode, zoom/fit (pure JS). `mount()` sniffs image magic +
+    SVG, RTF (`{\rtf`), zip→OOXML/ODF, and tabular-vs-prose text.
 - **Cross-cutting** — SSIM screenshot-diff harness to measure fidelity honestly;
   wasm size pass (wasm-opt, drop unused features).
 

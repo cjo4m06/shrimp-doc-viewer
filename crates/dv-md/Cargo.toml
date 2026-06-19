@@ -1,0 +1,10 @@
+[package]
+name = "dv-md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Markdown + plain-text parser -> dv-flow blocks."
+
+[dependencies]
+dv-flow.workspace = true
+dv-ir.workspace = true
