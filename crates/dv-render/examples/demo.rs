@@ -7,7 +7,10 @@
 //! without a browser. Eyeball `demo.png` to confirm glyphs (incl. 繁體中文,
 //! given a CJK font) actually render.
 
-use dv_ir::{Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PositionedGlyph, Transform};
+use dv_ir::{
+    Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PositionedGlyph,
+    Transform,
+};
 use dv_render::{render_to_pixmap, FontRegistry};
 use dv_text::{shape, FontData};
 
@@ -17,7 +20,9 @@ fn main() {
         eprintln!("usage: demo <font.ttf|otf> [text]");
         std::process::exit(2);
     });
-    let text = args.next().unwrap_or_else(|| "Hello, 你好,繁體中文! 0123".to_string());
+    let text = args
+        .next()
+        .unwrap_or_else(|| "Hello, 你好,繁體中文! 0123".to_string());
 
     let font_bytes = std::fs::read(&font_path).expect("read font file");
 

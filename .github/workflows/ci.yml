@@ -37,11 +37,9 @@ jobs:
         run: cargo build --release --target wasm32-unknown-unknown -p dv-wasm
 
   lint:
-    name: fmt & clippy (advisory)
+    name: fmt & clippy
     runs-on: ubuntu-latest
-    # Advisory only: surfaces style/lint feedback without blocking PRs. Flip to a
-    # required check once the tree is `cargo fmt`-clean and clippy-clean.
-    continue-on-error: true
+    # Required gate: the tree is kept rustfmt-clean and clippy-clean (-D warnings).
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2

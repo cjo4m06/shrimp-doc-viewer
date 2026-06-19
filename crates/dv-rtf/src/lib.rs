@@ -8,7 +8,10 @@ use std::collections::HashMap;
 
 use dv_flow::{Block, Span};
 use dv_ir::Color;
-use encoding_rs::{Encoding, BIG5, EUC_KR, GBK, SHIFT_JIS, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253, WINDOWS_1254, WINDOWS_1255, WINDOWS_1256, WINDOWS_1257, WINDOWS_1258, WINDOWS_874};
+use encoding_rs::{
+    Encoding, BIG5, EUC_KR, GBK, SHIFT_JIS, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253,
+    WINDOWS_1254, WINDOWS_1255, WINDOWS_1256, WINDOWS_1257, WINDOWS_1258, WINDOWS_874,
+};
 
 #[derive(Clone, Copy)]
 struct Fmt {
@@ -16,7 +19,7 @@ struct Fmt {
     italic: bool,
     underline: bool,
     strike: bool,
-    size: f32,    // px
+    size: f32, // px
     color: Option<Color>,
     uc: i32,      // \uc Unicode fallback skip count
     ignore: bool, // inside \fonttbl/\stylesheet/\*-group etc.
@@ -24,7 +27,16 @@ struct Fmt {
 
 impl Default for Fmt {
     fn default() -> Self {
-        Fmt { bold: false, italic: false, underline: false, strike: false, size: 15.0, color: None, uc: 1, ignore: false }
+        Fmt {
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            size: 15.0,
+            color: None,
+            uc: 1,
+            ignore: false,
+        }
     }
 }
 
@@ -143,7 +155,9 @@ pub fn parse(input: &[u8]) -> Vec<Block> {
                         while i < bytes.len() && bytes[i].is_ascii_digit() {
                             i += 1;
                         }
-                        num = std::str::from_utf8(&bytes[ns..i]).ok().and_then(|s| s.parse().ok());
+                        num = std::str::from_utf8(&bytes[ns..i])
+                            .ok()
+                            .and_then(|s| s.parse().ok());
                     }
                     if i < bytes.len() && bytes[i] == b' ' {
                         i += 1;
@@ -176,12 +190,27 @@ pub fn parse(input: &[u8]) -> Vec<Block> {
                                 cur_cp = cp;
                             }
                         }
-                        _ => apply_word(word, num, &mut f, &mut spans, &mut blocks, &mut colortbl, &mut in_colortbl, &mut cur_color, &mut skip_u, ansicpg, &mut cur_cp),
+                        _ => apply_word(
+                            word,
+                            num,
+                            &mut f,
+                            &mut spans,
+                            &mut blocks,
+                            &colortbl,
+                            &mut in_colortbl,
+                            &mut cur_color,
+                            &mut skip_u,
+                            ansicpg,
+                            &mut cur_cp,
+                        ),
                     }
                 } else {
                     match c {
                         b'\'' => {
-                            let hh = bytes.get(i + 1..i + 3).and_then(|b| std::str::from_utf8(b).ok()).and_then(|s| u8::from_str_radix(s, 16).ok());
+                            let hh = bytes
+                                .get(i + 1..i + 3)
+                                .and_then(|b| std::str::from_utf8(b).ok())
+                                .and_then(|s| u8::from_str_radix(s, 16).ok());
                             i += 3;
                             if skip_u > 0 {
                                 skip_u -= 1;
@@ -225,7 +254,12 @@ pub fn parse(input: &[u8]) -> Vec<Block> {
                 if in_colortbl {
                     for &b in &bytes[start..i] {
                         if b == b';' {
-                            colortbl.push(Color { r: cur_color.0, g: cur_color.1, b: cur_color.2, a: 255 });
+                            colortbl.push(Color {
+                                r: cur_color.0,
+                                g: cur_color.1,
+                                b: cur_color.2,
+                                a: 255,
+                            });
                             cur_color = (0, 0, 0);
                         }
                     }
@@ -273,7 +307,11 @@ fn push_span(spans: &mut Vec<Span>, f: &Fmt, s: &str) {
 
 fn end_para(spans: &mut Vec<Span>, blocks: &mut Vec<Block>) {
     let taken = std::mem::take(spans);
-    blocks.push(Block::Para(if taken.is_empty() { vec![Span::new("")] } else { taken }));
+    blocks.push(Block::Para(if taken.is_empty() {
+        vec![Span::new("")]
+    } else {
+        taken
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -283,7 +321,7 @@ fn apply_word(
     f: &mut Fmt,
     spans: &mut Vec<Span>,
     blocks: &mut Vec<Block>,
-    colortbl: &mut Vec<Color>,
+    colortbl: &[Color],
     in_colortbl: &mut bool,
     cur_color: &mut (u8, u8, u8),
     skip_u: &mut i32,
@@ -300,7 +338,13 @@ fn apply_word(
             f.size = 15.0;
             f.color = None;
         }
-        "plain" => *f = Fmt { uc: f.uc, ignore: f.ignore, ..Fmt::default() },
+        "plain" => {
+            *f = Fmt {
+                uc: f.uc,
+                ignore: f.ignore,
+                ..Fmt::default()
+            }
+        }
         "b" => f.bold = num != Some(0),
         "i" => f.italic = num != Some(0),
         "ul" => f.underline = num != Some(0),
@@ -314,7 +358,11 @@ fn apply_word(
         "uc" => f.uc = num.unwrap_or(1).max(0),
         "u" => {
             if let Some(n) = num {
-                let cp = if n < 0 { (n as i64 + 65536) as u32 } else { n as u32 };
+                let cp = if n < 0 {
+                    (n as i64 + 65536) as u32
+                } else {
+                    n as u32
+                };
                 if let Some(ch) = char::from_u32(cp) {
                     push_span(spans, f, &ch.to_string());
                 }
@@ -330,7 +378,8 @@ fn apply_word(
         "red" => cur_color.0 = num.unwrap_or(0) as u8,
         "green" => cur_color.1 = num.unwrap_or(0) as u8,
         "blue" => cur_color.2 = num.unwrap_or(0) as u8,
-        "fonttbl" | "stylesheet" | "info" | "pict" | "header" | "footer" | "footnote" | "themedata" | "colorschememapping" | "datastore" | "latentstyles" => f.ignore = true,
+        "fonttbl" | "stylesheet" | "info" | "pict" | "header" | "footer" | "footnote"
+        | "themedata" | "colorschememapping" | "datastore" | "latentstyles" => f.ignore = true,
         "tab" => push_span(spans, f, "\t"),
         "ansi" => *cur_cp = ansicpg,
         _ => {}

@@ -11,8 +11,12 @@ use dv_text::{FontData, Fonts};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let pptx_path = args.next().expect("usage: pptx_demo <file.pptx> <font> [slide] [name=path ...]");
-    let font_path = args.next().expect("usage: pptx_demo <file.pptx> <font> [slide] [name=path ...]");
+    let pptx_path = args
+        .next()
+        .expect("usage: pptx_demo <file.pptx> <font> [slide] [name=path ...]");
+    let font_path = args
+        .next()
+        .expect("usage: pptx_demo <file.pptx> <font> [slide] [name=path ...]");
     let idx: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let pptx = std::fs::read(&pptx_path).expect("read pptx");
@@ -35,5 +39,12 @@ fn main() {
 
     let pixmap = render_to_pixmap(&dl, &registry);
     pixmap.save_png("pptx.png").expect("save pptx.png");
-    println!("rendered slide {}/{} -> pptx.png ({}x{}) [{} fonts]", idx + 1, deck.slide_count(), pixmap.width(), pixmap.height(), fonts.data().len());
+    println!(
+        "rendered slide {}/{} -> pptx.png ({}x{}) [{} fonts]",
+        idx + 1,
+        deck.slide_count(),
+        pixmap.width(),
+        pixmap.height(),
+        fonts.data().len()
+    );
 }

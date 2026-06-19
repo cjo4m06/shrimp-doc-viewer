@@ -16,8 +16,18 @@ pub struct Color {
 }
 
 impl Color {
-    pub const BLACK: Color = Color { r: 0, g: 0, b: 0, a: 255 };
-    pub const WHITE: Color = Color { r: 255, g: 255, b: 255, a: 255 };
+    pub const BLACK: Color = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+    pub const WHITE: Color = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
 
     pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
         Color { r, g, b, a }
@@ -41,14 +51,35 @@ pub struct Transform {
 }
 
 impl Transform {
-    pub const IDENTITY: Transform = Transform { sx: 1.0, ky: 0.0, kx: 0.0, sy: 1.0, tx: 0.0, ty: 0.0 };
+    pub const IDENTITY: Transform = Transform {
+        sx: 1.0,
+        ky: 0.0,
+        kx: 0.0,
+        sy: 1.0,
+        tx: 0.0,
+        ty: 0.0,
+    };
 
     pub const fn translate(tx: f32, ty: f32) -> Transform {
-        Transform { sx: 1.0, ky: 0.0, kx: 0.0, sy: 1.0, tx, ty }
+        Transform {
+            sx: 1.0,
+            ky: 0.0,
+            kx: 0.0,
+            sy: 1.0,
+            tx,
+            ty,
+        }
     }
 
     pub const fn scale(sx: f32, sy: f32) -> Transform {
-        Transform { sx, ky: 0.0, kx: 0.0, sy, tx: 0.0, ty: 0.0 }
+        Transform {
+            sx,
+            ky: 0.0,
+            kx: 0.0,
+            sy,
+            tx: 0.0,
+            ty: 0.0,
+        }
     }
 }
 
@@ -184,7 +215,11 @@ pub struct DisplayList {
 
 impl DisplayList {
     pub fn new(width: f32, height: f32) -> Self {
-        Self { width, height, commands: Vec::new() }
+        Self {
+            width,
+            height,
+            commands: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, command: Command) {

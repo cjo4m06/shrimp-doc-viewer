@@ -178,7 +178,11 @@ fn sheet_path(zip: &mut Zip, index: usize) -> Option<String> {
 }
 
 fn parse_worksheet(xml: &str, default_col_px: f32, default_row_px: f32) -> Geometry {
-    let mut g = Geometry { default_col_px, default_row_px, ..Default::default() };
+    let mut g = Geometry {
+        default_col_px,
+        default_row_px,
+        ..Default::default()
+    };
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut max_row = 0u32;
@@ -195,8 +199,12 @@ fn parse_worksheet(xml: &str, default_col_px: f32, default_row_px: f32) -> Geome
                     }
                 }
                 b"col" => {
-                    let min = get_attr(&e, b"min").and_then(|s| s.parse().ok()).unwrap_or(1);
-                    let max = get_attr(&e, b"max").and_then(|s| s.parse().ok()).unwrap_or(min);
+                    let min = get_attr(&e, b"min")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1);
+                    let max = get_attr(&e, b"max")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(min);
                     if let Some(w) = get_attr(&e, b"width").and_then(|s| s.parse::<f32>().ok()) {
                         // Excel char width -> px (Calibri 11 approximation).
                         g.col_ranges.push((min, max, w * 7.0 + 5.0));
@@ -243,8 +251,8 @@ fn parse_worksheet(xml: &str, default_col_px: f32, default_row_px: f32) -> Geome
 fn theme_color(idx: u32) -> Color {
     // Approximate default Office theme palette (tint applied separately).
     match idx {
-        0 => Color::WHITE,                  // lt1 / background1
-        1 => Color::BLACK,                  // dk1 / text1
+        0 => Color::WHITE, // lt1 / background1
+        1 => Color::BLACK, // dk1 / text1
         2 => Color::rgb(0xEE, 0xEC, 0xE1),
         3 => Color::rgb(0x1F, 0x49, 0x7D),
         4 => Color::rgb(0x4F, 0x81, 0xBD),
@@ -263,14 +271,20 @@ fn apply_tint(c: Color, tint: f64) -> Color {
     }
     let f = |v: u8| -> u8 {
         let v = v as f64;
-        let nv = if tint < 0.0 { v * (1.0 + tint) } else { v * (1.0 - tint) + 255.0 * tint };
+        let nv = if tint < 0.0 {
+            v * (1.0 + tint)
+        } else {
+            v * (1.0 - tint) + 255.0 * tint
+        };
         nv.round().clamp(0.0, 255.0) as u8
     };
     Color::rgba(f(c.r), f(c.g), f(c.b), c.a)
 }
 
 fn parse_color(e: &BytesStart) -> Option<Color> {
-    let tint = get_attr(e, b"tint").and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+    let tint = get_attr(e, b"tint")
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
     if let Some(rgb) = get_attr(e, b"rgb") {
         let hex = rgb.trim();
         let h = if hex.len() == 8 { &hex[2..] } else { hex };
@@ -407,10 +421,18 @@ fn styles_open(st: &mut StylesState, sec: &mut Sec, e: &BytesStart, empty: bool)
         }
         b"xf" if *sec == Sec::CellXfs => {
             let raw: XfRaw = (
-                get_attr(e, b"numFmtId").and_then(|s| s.parse().ok()).unwrap_or(0),
-                get_attr(e, b"fontId").and_then(|s| s.parse().ok()).unwrap_or(0),
-                get_attr(e, b"fillId").and_then(|s| s.parse().ok()).unwrap_or(0),
-                get_attr(e, b"borderId").and_then(|s| s.parse().ok()).unwrap_or(0),
+                get_attr(e, b"numFmtId")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                get_attr(e, b"fontId")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                get_attr(e, b"fillId")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                get_attr(e, b"borderId")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
                 None,
             );
             if empty {
@@ -481,12 +503,23 @@ fn parse_styles(xml: &str) -> Styles {
 
 /// Parse geometry + styles for one sheet. Returns sensible defaults on failure.
 pub fn parse(bytes: &[u8], sheet_index: usize, default_col_px: f32, default_row_px: f32) -> Parsed {
-    let fallback = || Geometry { default_col_px, default_row_px, ..Default::default() };
+    let fallback = || Geometry {
+        default_col_px,
+        default_row_px,
+        ..Default::default()
+    };
     let mut zip = match ZipArchive::new(Cursor::new(bytes.to_vec())) {
         Ok(z) => z,
-        Err(_) => return Parsed { geom: fallback(), styles: Styles::default() },
+        Err(_) => {
+            return Parsed {
+                geom: fallback(),
+                styles: Styles::default(),
+            }
+        }
     };
-    let styles = read_entry(&mut zip, "xl/styles.xml").map(|s| parse_styles(&s)).unwrap_or_default();
+    let styles = read_entry(&mut zip, "xl/styles.xml")
+        .map(|s| parse_styles(&s))
+        .unwrap_or_default();
     let geom = match sheet_path(&mut zip, sheet_index).and_then(|p| read_entry(&mut zip, &p)) {
         Some(xml) => parse_worksheet(&xml, default_col_px, default_row_px),
         None => fallback(),

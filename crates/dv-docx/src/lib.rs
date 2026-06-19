@@ -19,6 +19,10 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use zip::ZipArchive;
 
+/// A glyph laid out at layout time so rendering needs no font:
+/// (glyph id, x, y baseline, size px, colour, bold, font index).
+type LaidGlyph = (u32, f32, f32, f32, Color, bool, usize);
+
 #[derive(Clone, Copy, PartialEq)]
 enum Align {
     Left,
@@ -35,11 +39,11 @@ struct RPr {
     italic: Option<bool>,
     underline: Option<bool>,
     strike: Option<bool>,
-    size: Option<f32>,       // px
-    vert_align: Option<i8>,  // 1=superscript, -1=subscript, 0=baseline
+    size: Option<f32>,      // px
+    vert_align: Option<i8>, // 1=superscript, -1=subscript, 0=baseline
     color: Option<Color>,
     highlight: Option<Color>,
-    font_ascii: Option<String>,     // w:rFonts w:ascii/w:hAnsi (Latin face)
+    font_ascii: Option<String>, // w:rFonts w:ascii/w:hAnsi (Latin face)
     font_east_asia: Option<String>, // w:rFonts w:eastAsia (CJK face)
 }
 
@@ -110,7 +114,12 @@ struct ParaBorder {
 
 impl Default for ParaBorder {
     fn default() -> Self {
-        ParaBorder { top: false, bottom: false, color: Color::BLACK, size: 1.0 }
+        ParaBorder {
+            top: false,
+            bottom: false,
+            color: Color::BLACK,
+            size: 1.0,
+        }
     }
 }
 
@@ -130,8 +139,8 @@ struct Para {
     // spacing (px): before/after; line height multiple (0 = auto)
     spc_before: f32,
     spc_after: f32,
-    line_mult: f32,    // w:spacing line/240 when lineRule=auto (0 = unset)
-    line_exact: f32,   // exact/atLeast line height px (0 = unset)
+    line_mult: f32,  // w:spacing line/240 when lineRule=auto (0 = unset)
+    line_exact: f32, // exact/atLeast line height px (0 = unset)
     pbdr: ParaBorder,
     shd: Option<Color>,
     tab_stops: Vec<(f32, Align)>, // (position px, alignment)
@@ -194,7 +203,11 @@ struct Border {
 }
 impl Default for Border {
     fn default() -> Self {
-        Border { on: false, color: Color::BLACK, size: 1.0 }
+        Border {
+            on: false,
+            color: Color::BLACK,
+            size: 1.0,
+        }
     }
 }
 
@@ -283,7 +296,7 @@ struct DShape {
     image: Option<dv_image::DecodedImage>,
     blocks: Vec<Block>,
     // text laid out at layout time (so rendering needs no font): glyphs + height
-    glyphs: Vec<(u32, f32, f32, f32, Color, bool, usize)>,
+    glyphs: Vec<LaidGlyph>,
     text_h: f32,
 }
 
@@ -297,8 +310,8 @@ struct Float {
     image: Option<dv_image::DecodedImage>,
     img_w: f32,
     img_h: f32,
-    body_y: f32,  // anchor paragraph top in body coords (assigned at layout time)
-    behind: bool, // behindDoc / wrapNone -> doesn't reserve body space
+    body_y: f32,   // anchor paragraph top in body coords (assigned at layout time)
+    behind: bool,  // behindDoc / wrapNone -> doesn't reserve body space
     grouped: bool, // shapes came through a real <wpg> group (page-absolute coords)
 }
 
@@ -407,12 +420,18 @@ fn parse_document(xml: &str) -> Document {
                 *cur_para = Some(Para::default());
             }
             b"w:numId" => {
-                if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                if let (Some(p), Some(v)) = (
+                    cur_para.as_mut(),
+                    get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok()),
+                ) {
                     p.num_id = Some(v);
                 }
             }
             b"w:ilvl" => {
-                if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                if let (Some(p), Some(v)) = (
+                    cur_para.as_mut(),
+                    get_attr(e, b"w:val").and_then(|s| s.parse::<u32>().ok()),
+                ) {
                     p.num_ilvl = v;
                 }
             }
@@ -435,7 +454,12 @@ fn parse_document(xml: &str) -> Document {
             }
             b"w:keepLines" | b"w:keepNext" => {
                 if let Some(p) = cur_para.as_mut() {
-                    if cur_run.is_none() && !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")) {
+                    if cur_run.is_none()
+                        && !matches!(
+                            get_attr(e, b"w:val").as_deref(),
+                            Some("false") | Some("0") | Some("off")
+                        )
+                    {
                         p.keep_lines = true;
                     }
                 }
@@ -493,11 +517,17 @@ fn parse_document(xml: &str) -> Document {
             b"w:b" => {
                 if let Some(r) = cur_run.as_mut() {
                     let v = get_attr(e, b"w:val");
-                    r.direct.bold = Some(!matches!(v.as_deref(), Some("false") | Some("0") | Some("off")));
+                    r.direct.bold = Some(!matches!(
+                        v.as_deref(),
+                        Some("false") | Some("0") | Some("off")
+                    ));
                 }
             }
             b"w:sz" => {
-                if let (Some(r), Some(v)) = (cur_run.as_mut(), get_attr(e, b"w:val").and_then(|s| s.parse::<f32>().ok())) {
+                if let (Some(r), Some(v)) = (
+                    cur_run.as_mut(),
+                    get_attr(e, b"w:val").and_then(|s| s.parse::<f32>().ok()),
+                ) {
                     r.direct.size = Some(v * 2.0 / 3.0); // half-points -> px
                 }
             }
@@ -508,7 +538,10 @@ fn parse_document(xml: &str) -> Document {
             }
             b"w:i" => {
                 if let Some(r) = cur_run.as_mut() {
-                    r.direct.italic = Some(!matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")));
+                    r.direct.italic = Some(!matches!(
+                        get_attr(e, b"w:val").as_deref(),
+                        Some("false") | Some("0") | Some("off")
+                    ));
                 }
             }
             b"w:u" => {
@@ -518,7 +551,10 @@ fn parse_document(xml: &str) -> Document {
             }
             b"w:strike" => {
                 if let Some(r) = cur_run.as_mut() {
-                    r.direct.strike = Some(!matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off")));
+                    r.direct.strike = Some(!matches!(
+                        get_attr(e, b"w:val").as_deref(),
+                        Some("false") | Some("0") | Some("off")
+                    ));
                 }
             }
             b"w:vertAlign" => {
@@ -538,13 +574,18 @@ fn parse_document(xml: &str) -> Document {
             b"w:spacing" => {
                 if let Some(p) = cur_para.as_mut() {
                     if cur_run.is_none() {
-                        if let Some(v) = get_attr(e, b"w:before").and_then(|s| s.parse::<f32>().ok()) {
+                        if let Some(v) =
+                            get_attr(e, b"w:before").and_then(|s| s.parse::<f32>().ok())
+                        {
                             p.spc_before = v * TWIP_TO_PX;
                         }
-                        if let Some(v) = get_attr(e, b"w:after").and_then(|s| s.parse::<f32>().ok()) {
+                        if let Some(v) = get_attr(e, b"w:after").and_then(|s| s.parse::<f32>().ok())
+                        {
                             p.spc_after = v * TWIP_TO_PX;
                         }
-                        if let Some(line) = get_attr(e, b"w:line").and_then(|s| s.parse::<f32>().ok()) {
+                        if let Some(line) =
+                            get_attr(e, b"w:line").and_then(|s| s.parse::<f32>().ok())
+                        {
                             match get_attr(e, b"w:lineRule").as_deref() {
                                 Some("exact") | Some("atLeast") => p.line_exact = line * TWIP_TO_PX,
                                 _ => p.line_mult = line / 240.0,
@@ -556,7 +597,10 @@ fn parse_document(xml: &str) -> Document {
             b"w:tabs" => *in_tabs = true,
             b"w:tab" => {
                 if *in_tabs {
-                    if let (Some(p), Some(pos)) = (cur_para.as_mut(), get_attr(e, b"w:pos").and_then(|s| s.parse::<f32>().ok())) {
+                    if let (Some(p), Some(pos)) = (
+                        cur_para.as_mut(),
+                        get_attr(e, b"w:pos").and_then(|s| s.parse::<f32>().ok()),
+                    ) {
                         let al = match get_attr(e, b"w:val").as_deref() {
                             Some("center") => Align::Center,
                             Some("right") | Some("end") => Align::Right,
@@ -582,7 +626,10 @@ fn parse_document(xml: &str) -> Document {
             },
             b"w:pageBreakBefore" => {
                 if let Some(p) = cur_para.as_mut() {
-                    p.page_break_before = !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off"));
+                    p.page_break_before = !matches!(
+                        get_attr(e, b"w:val").as_deref(),
+                        Some("false") | Some("0") | Some("off")
+                    );
                 }
             }
             b"w:t" => *in_t = true,
@@ -638,18 +685,18 @@ fn parse_document(xml: &str) -> Document {
     let mut border_ctx: u8 = 0; // 0 none, 1 pBdr, 2 tblBorders, 3 tcBorders
     let mut in_tcpr = false;
     let mut in_rpr = false; // inside a w:rPr (a run's or a paragraph-mark's run props)
-    // depth inside revision-tracking *Change snapshots (pPrChange / tblGridChange /
-    // tcPrChange …) — their contents are stale and must be ignored.
+                            // depth inside revision-tracking *Change snapshots (pPrChange / tblGridChange /
+                            // tcPrChange …) — their contents are stale and must be ignored.
     let mut in_change: u32 = 0;
     let mut in_fallback: u32 = 0; // mc:Fallback (VML) — skip, prefer mc:Choice DrawingML
-    // floating anchored drawing state
+                                  // floating anchored drawing state
     let mut cur_float: Option<Float> = None;
     let mut cur_dshape: Option<DShape> = None;
     let mut in_txbx = false;
     let mut in_dln = false; // inside a:ln of a drawing shape
     let mut pos_target: u8 = 0; // 1=H, 2=V (capturing wp:posOffset text)
-    // saved (body) para/run while inside a text box, so nested txbx paragraphs
-    // don't clobber the paragraph that anchors the float.
+                                // saved (body) para/run while inside a text box, so nested txbx paragraphs
+                                // don't clobber the paragraph that anchors the float.
     let mut para_stack: Vec<(Option<Para>, Option<Run>)> = Vec::new();
     // group transform stack for floats: (sx, sy, tx, ty) mapping raw shape coords
     // (EMU at top level, child units inside groups) -> px relative to the anchor.
@@ -689,7 +736,18 @@ fn parse_document(xml: &str) -> Document {
                     // ---- floating anchored drawings (text boxes / autoshapes) ----
                     b"wp:anchor" => {
                         let behind = get_attr(&e, b"behindDoc").as_deref() == Some("1");
-                        cur_float = Some(Float { off_x: 0.0, off_y: 0.0, shapes: Vec::new(), image_rid: None, image: None, img_w: 0.0, img_h: 0.0, body_y: 0.0, behind, grouped: false });
+                        cur_float = Some(Float {
+                            off_x: 0.0,
+                            off_y: 0.0,
+                            shapes: Vec::new(),
+                            image_rid: None,
+                            image: None,
+                            img_w: 0.0,
+                            img_h: 0.0,
+                            body_y: 0.0,
+                            behind,
+                            grouped: false,
+                        });
                         gstack = vec![base_tf];
                         in_grpspr = false;
                     }
@@ -704,12 +762,62 @@ fn parse_document(xml: &str) -> Document {
                         pos_target = if pos_target >= 20 { 2 } else { 1 };
                     }
                     b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, path: Vec::new(), path_w: 0.0, path_h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 0.0,
+                            h: 0.0,
+                            path: Vec::new(),
+                            path_w: 0.0,
+                            path_h: 0.0,
+                            fill: None,
+                            outline: None,
+                            rounded: false,
+                            callout: false,
+                            adj1: -0.20833,
+                            adj2: 0.625,
+                            is_line: false,
+                            flip_v: false,
+                            flip_h: false,
+                            arrow_tail: false,
+                            arrow_head: false,
+                            image_rid: None,
+                            image: None,
+                            blocks: Vec::new(),
+                            glyphs: Vec::new(),
+                            text_h: 0.0,
+                        });
                     }
                     // A picture INSIDE a group: treat it as a shape drawn at its own box
                     // (so it isn't stretched to the whole group's extent).
-                    b"pic:pic" if cur_float.is_some() && gstack.len() > 1 && cur_dshape.is_none() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, path: Vec::new(), path_w: 0.0, path_h: 0.0, fill: None, outline: None, rounded: false, callout: false, adj1: -0.20833, adj2: 0.625, is_line: false, flip_v: false, flip_h: false, arrow_tail: false, arrow_head: false, image_rid: None, image: None, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                    b"pic:pic"
+                        if cur_float.is_some() && gstack.len() > 1 && cur_dshape.is_none() =>
+                    {
+                        cur_dshape = Some(DShape {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 0.0,
+                            h: 0.0,
+                            path: Vec::new(),
+                            path_w: 0.0,
+                            path_h: 0.0,
+                            fill: None,
+                            outline: None,
+                            rounded: false,
+                            callout: false,
+                            adj1: -0.20833,
+                            adj2: 0.625,
+                            is_line: false,
+                            flip_v: false,
+                            flip_h: false,
+                            arrow_tail: false,
+                            arrow_head: false,
+                            image_rid: None,
+                            image: None,
+                            blocks: Vec::new(),
+                            glyphs: Vec::new(),
+                            text_h: 0.0,
+                        });
                     }
                     b"wpg:grpSpPr" if cur_float.is_some() => {
                         in_grpspr = !is_empty;
@@ -720,20 +828,36 @@ fn parse_document(xml: &str) -> Document {
                         para_stack.push((cur_para.take(), cur_run.take()));
                     }
                     b"a:off" if in_grpspr => {
-                        g_xfrm[0] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-                        g_xfrm[1] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[0] = get_attr(&e, b"x")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
+                        g_xfrm[1] = get_attr(&e, b"y")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
                     }
                     b"a:ext" if in_grpspr => {
-                        g_xfrm[2] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-                        g_xfrm[3] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[2] = get_attr(&e, b"cx")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
+                        g_xfrm[3] = get_attr(&e, b"cy")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
                     }
                     b"a:chOff" if in_grpspr => {
-                        g_xfrm[4] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-                        g_xfrm[5] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[4] = get_attr(&e, b"x")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
+                        g_xfrm[5] = get_attr(&e, b"y")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
                     }
                     b"a:chExt" if in_grpspr => {
-                        g_xfrm[6] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-                        g_xfrm[7] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[6] = get_attr(&e, b"cx")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
+                        g_xfrm[7] = get_attr(&e, b"cy")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
                     }
                     b"a:xfrm" if cur_float.is_some() => {
                         if let Some(s) = cur_dshape.as_mut() {
@@ -743,14 +867,22 @@ fn parse_document(xml: &str) -> Document {
                     }
                     b"a:off" if cur_float.is_some() => {
                         if let Some(s) = cur_dshape.as_mut() {
-                            s.x = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-                            s.y = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                            s.x = get_attr(&e, b"x")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0);
+                            s.y = get_attr(&e, b"y")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0);
                         }
                     }
                     b"a:ext" if cur_float.is_some() => {
                         if let Some(s) = cur_dshape.as_mut() {
-                            s.w = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-                            s.h = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                            s.w = get_attr(&e, b"cx")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0);
+                            s.h = get_attr(&e, b"cy")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0);
                         }
                     }
                     b"a:prstGeom" if cur_float.is_some() => {
@@ -764,8 +896,12 @@ fn parse_document(xml: &str) -> Document {
                     // ---- custGeom freeform paths (e.g. the curved connector lines) ----
                     b"a:path" if cur_float.is_some() => {
                         if let Some(s) = cur_dshape.as_mut() {
-                            s.path_w = get_attr(&e, b"w").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-                            s.path_h = get_attr(&e, b"h").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                            s.path_w = get_attr(&e, b"w")
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(0.0);
+                            s.path_h = get_attr(&e, b"h")
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(0.0);
                         }
                     }
                     b"a:moveTo" if cur_float.is_some() => {
@@ -790,8 +926,12 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"a:pt" if cur_float.is_some() && cur_verb != 0 => {
-                        let x = get_attr(&e, b"x").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
-                        let y = get_attr(&e, b"y").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+                        let x = get_attr(&e, b"x")
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(0.0);
+                        let y = get_attr(&e, b"y")
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(0.0);
                         verb_pts.push((x, y));
                     }
                     b"a:gd" if cur_float.is_some() => {
@@ -799,7 +939,9 @@ fn parse_document(xml: &str) -> Document {
                         if let Some(s) = cur_dshape.as_mut() {
                             if s.callout {
                                 let name = get_attr(&e, b"name").unwrap_or_default();
-                                if let Some(v) = get_attr(&e, b"fmla").and_then(|f| f.strip_prefix("val ").and_then(|n| n.parse::<f32>().ok())) {
+                                if let Some(v) = get_attr(&e, b"fmla").and_then(|f| {
+                                    f.strip_prefix("val ").and_then(|n| n.parse::<f32>().ok())
+                                }) {
                                     if name == "adj1" {
                                         s.adj1 = v / 100000.0;
                                     } else if name == "adj2" {
@@ -855,8 +997,14 @@ fn parse_document(xml: &str) -> Document {
                     }
                     b"wp:extent" if cur_float.is_some() => {
                         if let Some(f) = cur_float.as_mut() {
-                            f.img_w = get_attr(&e, b"cx").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) * EMU_TO_PX;
-                            f.img_h = get_attr(&e, b"cy").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) * EMU_TO_PX;
+                            f.img_w = get_attr(&e, b"cx")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0)
+                                * EMU_TO_PX;
+                            f.img_h = get_attr(&e, b"cy")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .unwrap_or(0.0)
+                                * EMU_TO_PX;
                         }
                     }
                     // ---- table structure ----
@@ -877,7 +1025,11 @@ fn parse_document(xml: &str) -> Document {
                     }),
                     b"w:tr" => {
                         if let Some(tb) = tables.last_mut() {
-                            tb.cur_row = Some(Row { cells: Vec::new(), min_h: 0.0, is_header: false });
+                            tb.cur_row = Some(Row {
+                                cells: Vec::new(),
+                                min_h: 0.0,
+                                is_header: false,
+                            });
                         }
                     }
                     b"w:tc" => {
@@ -893,7 +1045,10 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"w:gridCol" => {
-                        if let (Some(tb), Some(w)) = (tables.last_mut(), get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok())) {
+                        if let (Some(tb), Some(w)) = (
+                            tables.last_mut(),
+                            get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok()),
+                        ) {
                             tb.table.grid.push(w * TWIP_TO_PX);
                         }
                     }
@@ -907,7 +1062,10 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"w:gridSpan" => {
-                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                        if let (Some(tb), Some(v)) = (
+                            tables.last_mut(),
+                            get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok()),
+                        ) {
                             if let Some(c) = tb.cur_cell.as_mut() {
                                 c.grid_span = v.max(1);
                             }
@@ -931,7 +1089,10 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"w:trHeight" => {
-                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse::<f32>().ok())) {
+                        if let (Some(tb), Some(v)) = (
+                            tables.last_mut(),
+                            get_attr(&e, b"w:val").and_then(|s| s.parse::<f32>().ok()),
+                        ) {
                             if let Some(r) = tb.cur_row.as_mut() {
                                 r.min_h = v * TWIP_TO_PX;
                             }
@@ -943,7 +1104,10 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"w:tblInd" => {
-                        if let (Some(tb), Some(v)) = (tables.last_mut(), get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok())) {
+                        if let (Some(tb), Some(v)) = (
+                            tables.last_mut(),
+                            get_attr(&e, b"w:w").and_then(|s| s.parse::<f32>().ok()),
+                        ) {
                             tb.table.ind = v * TWIP_TO_PX;
                         }
                     }
@@ -959,14 +1123,18 @@ fn parse_document(xml: &str) -> Document {
                             }
                         }
                     }
-                    b"w:left" | b"w:right" | b"w:top" | b"w:bottom" | b"w:insideH" | b"w:insideV" => {
+                    b"w:left" | b"w:right" | b"w:top" | b"w:bottom" | b"w:insideH"
+                    | b"w:insideV" => {
                         // Border side — route by context. (w:top/bottom/start/end of cell margins ignored here.)
                         if border_ctx != 0 {
                             let bd = parse_border(&e);
                             let side = name.as_ref();
                             let set: Option<&mut BorderSet> = match border_ctx {
                                 2 => tables.last_mut().map(|tb| &mut tb.table.borders),
-                                3 => tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()).map(|c| &mut c.borders),
+                                3 => tables
+                                    .last_mut()
+                                    .and_then(|tb| tb.cur_cell.as_mut())
+                                    .map(|c| &mut c.borders),
                                 _ => None,
                             };
                             if let Some(set) = set {
@@ -995,7 +1163,10 @@ fn parse_document(xml: &str) -> Document {
                     }
                     b"w:shd" => {
                         let fill = get_attr(&e, b"w:fill");
-                        let col = fill.as_deref().filter(|f| !f.eq_ignore_ascii_case("auto") && *f != "FFFFFF").map(parse_color);
+                        let col = fill
+                            .as_deref()
+                            .filter(|f| !f.eq_ignore_ascii_case("auto") && *f != "FFFFFF")
+                            .map(parse_color);
                         if in_tcpr {
                             if let Some(c) = tables.last_mut().and_then(|tb| tb.cur_cell.as_mut()) {
                                 c.shd = col;
@@ -1013,17 +1184,28 @@ fn parse_document(xml: &str) -> Document {
                         }
                     }
                     b"w:headerReference" => {
-                        if let (Some(ty), Some(id)) = (get_attr(&e, b"w:type"), get_attr(&e, b"r:id")) {
+                        if let (Some(ty), Some(id)) =
+                            (get_attr(&e, b"w:type"), get_attr(&e, b"r:id"))
+                        {
                             doc.hdr_refs.push((ty, id));
                         }
                     }
                     b"w:footerReference" => {
-                        if let (Some(ty), Some(id)) = (get_attr(&e, b"w:type"), get_attr(&e, b"r:id")) {
+                        if let (Some(ty), Some(id)) =
+                            (get_attr(&e, b"w:type"), get_attr(&e, b"r:id"))
+                        {
                             doc.ftr_refs.push((ty, id));
                         }
                     }
                     b"w:titlePg" => doc.title_pg = true,
-                    _ => open(&mut doc, &mut cur_para, &mut cur_run, &mut in_t, &mut in_tabs, &e),
+                    _ => open(
+                        &mut doc,
+                        &mut cur_para,
+                        &mut cur_run,
+                        &mut in_t,
+                        &mut in_tabs,
+                        &e,
+                    ),
                 }
             }
             Ok(Event::Text(t)) => {
@@ -1058,12 +1240,16 @@ fn parse_document(xml: &str) -> Document {
                 b"w:rPr" => in_rpr = false,
                 b"wp:posOffset" => pos_target = 0,
                 b"a:ln" if cur_float.is_some() => in_dln = false,
-                b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" | b"a:quadBezTo" if cur_float.is_some() => {
+                b"a:moveTo" | b"a:lnTo" | b"a:cubicBezTo" | b"a:quadBezTo"
+                    if cur_float.is_some() =>
+                {
                     if let Some(s) = cur_dshape.as_mut() {
                         match (cur_verb, verb_pts.as_slice()) {
                             (1, [(x, y)]) => s.path.push(PathSeg::Move(*x, *y)),
                             (2, [(x, y)]) => s.path.push(PathSeg::Line(*x, *y)),
-                            (3, [(x1, y1), (x2, y2), (x, y)]) => s.path.push(PathSeg::Cubic(*x1, *y1, *x2, *y2, *x, *y)),
+                            (3, [(x1, y1), (x2, y2), (x, y)]) => {
+                                s.path.push(PathSeg::Cubic(*x1, *y1, *x2, *y2, *x, *y))
+                            }
                             (4, [(cx, cy), (x, y)]) => s.path.push(PathSeg::Quad(*cx, *cy, *x, *y)),
                             _ => {}
                         }
@@ -1083,8 +1269,16 @@ fn parse_document(xml: &str) -> Document {
                     if let Some(f) = cur_float.as_mut() {
                         f.grouped = true;
                     }
-                    let gsx = if g_xfrm[6] != 0.0 { g_xfrm[2] / g_xfrm[6] } else { 1.0 };
-                    let gsy = if g_xfrm[7] != 0.0 { g_xfrm[3] / g_xfrm[7] } else { 1.0 };
+                    let gsx = if g_xfrm[6] != 0.0 {
+                        g_xfrm[2] / g_xfrm[6]
+                    } else {
+                        1.0
+                    };
+                    let gsy = if g_xfrm[7] != 0.0 {
+                        g_xfrm[3] / g_xfrm[7]
+                    } else {
+                        1.0
+                    };
                     let ltx = g_xfrm[0] - g_xfrm[4] * gsx;
                     let lty = g_xfrm[1] - g_xfrm[5] * gsy;
                     let (psx, psy, ptx, pty) = *gstack.last().unwrap();
@@ -1115,7 +1309,12 @@ fn parse_document(xml: &str) -> Document {
                         f.shapes.push(s);
                     }
                 }
-                b"pic:pic" if cur_dshape.as_ref().map(|s| s.image_rid.is_some()).unwrap_or(false) => {
+                b"pic:pic"
+                    if cur_dshape
+                        .as_ref()
+                        .map(|s| s.image_rid.is_some())
+                        .unwrap_or(false) =>
+                {
                     if let (Some(_f), Some(mut s)) = (cur_float.as_mut(), cur_dshape.take()) {
                         let (sx, sy, tx, ty) = *gstack.last().unwrap();
                         s.x = s.x * sx + tx;
@@ -1223,9 +1422,17 @@ fn collect_float_paras_mut<'a>(blocks: &'a mut [Block], out: &mut Vec<&'a mut Pa
 
 /// Parse a border element (`w:sz` eighths-of-pt, `w:color`, `w:val`).
 fn parse_border(e: &BytesStart) -> Border {
-    let on = !matches!(get_attr(e, b"w:val").as_deref(), Some("none") | Some("nil") | None);
-    let size = get_attr(e, b"w:sz").and_then(|s| s.parse::<f32>().ok()).map(|sz| (sz / 8.0 * 4.0 / 3.0).max(0.75)).unwrap_or(1.0);
-    let color = get_attr(e, b"w:color").map(|c| parse_color(&c)).unwrap_or(Color::BLACK);
+    let on = !matches!(
+        get_attr(e, b"w:val").as_deref(),
+        Some("none") | Some("nil") | None
+    );
+    let size = get_attr(e, b"w:sz")
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|sz| (sz / 8.0 * 4.0 / 3.0).max(0.75))
+        .unwrap_or(1.0);
+    let color = get_attr(e, b"w:color")
+        .map(|c| parse_color(&c))
+        .unwrap_or(Color::BLACK);
     Border { on, color, size }
 }
 
@@ -1275,10 +1482,18 @@ fn shape_seg(fonts: &Fonts, run: &Run, sz: f32, vshift: f32, seg: &str, items: &
     let chars: Vec<char> = seg.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        let fi = fonts.idx_for(run.font_ascii.as_deref(), run.font_east_asia.as_deref(), chars[i]);
+        let fi = fonts.idx_for(
+            run.font_ascii.as_deref(),
+            run.font_east_asia.as_deref(),
+            chars[i],
+        );
         let mut sub = String::new();
         while i < chars.len()
-            && fonts.idx_for(run.font_ascii.as_deref(), run.font_east_asia.as_deref(), chars[i]) == fi
+            && fonts.idx_for(
+                run.font_ascii.as_deref(),
+                run.font_east_asia.as_deref(),
+                chars[i],
+            ) == fi
         {
             sub.push(chars[i]);
             i += 1;
@@ -1287,7 +1502,10 @@ fn shape_seg(fonts: &Fonts, run: &Run, sz: f32, vshift: f32, seg: &str, items: &
         let shaped = shape(fd, &sub, sz);
         let scale = sz / shaped.units_per_em.max(1.0);
         for g in &shaped.glyphs {
-            let ch = sub.get(g.cluster as usize..).and_then(|s| s.chars().next()).unwrap_or(' ');
+            let ch = sub
+                .get(g.cluster as usize..)
+                .and_then(|s| s.chars().next())
+                .unwrap_or(' ');
             let is_space = ch.is_whitespace();
             items.push(Item {
                 kind: IKind::Glyph,
@@ -1393,7 +1611,11 @@ fn wrap(items: Vec<Item>, content_w: f32) -> Vec<Vec<Item>> {
 
 fn line_width(line: &[Item]) -> f32 {
     // Width excluding trailing spaces.
-    let end = line.iter().rposition(|i| !i.is_space).map(|i| i + 1).unwrap_or(0);
+    let end = line
+        .iter()
+        .rposition(|i| !i.is_space)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     line[..end].iter().map(|i| i.advance).sum()
 }
 
@@ -1451,13 +1673,24 @@ fn parse_numbering_xml(xml: &str) -> Numbering {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => match e.name().as_ref() {
-                b"w:abstractNum" => cur_abstract = get_attr(&e, b"w:abstractNumId").and_then(|s| s.parse().ok()),
+                b"w:abstractNum" => {
+                    cur_abstract = get_attr(&e, b"w:abstractNumId").and_then(|s| s.parse().ok())
+                }
                 b"w:lvl" => {
                     cur_ilvl = get_attr(&e, b"w:ilvl").and_then(|s| s.parse().ok());
-                    cur_lvl = Some(Lvl { fmt: NumFmt::Decimal, text: String::new(), start: 1, ind_left: None, ind_hanging: None });
+                    cur_lvl = Some(Lvl {
+                        fmt: NumFmt::Decimal,
+                        text: String::new(),
+                        start: 1,
+                        ind_left: None,
+                        ind_hanging: None,
+                    });
                 }
                 b"w:start" => {
-                    if let (Some(l), Some(v)) = (cur_lvl.as_mut(), get_attr(&e, b"w:val").and_then(|s| s.parse().ok())) {
+                    if let (Some(l), Some(v)) = (
+                        cur_lvl.as_mut(),
+                        get_attr(&e, b"w:val").and_then(|s| s.parse().ok()),
+                    ) {
                         l.start = v;
                     }
                 }
@@ -1473,13 +1706,20 @@ fn parse_numbering_xml(xml: &str) -> Numbering {
                 }
                 b"w:ind" => {
                     if let Some(l) = cur_lvl.as_mut() {
-                        l.ind_left = get_attr(&e, b"w:left").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
-                        l.ind_hanging = get_attr(&e, b"w:hanging").and_then(|s| s.parse::<f32>().ok()).map(|v| v * TWIP_TO_PX);
+                        l.ind_left = get_attr(&e, b"w:left")
+                            .and_then(|s| s.parse::<f32>().ok())
+                            .map(|v| v * TWIP_TO_PX);
+                        l.ind_hanging = get_attr(&e, b"w:hanging")
+                            .and_then(|s| s.parse::<f32>().ok())
+                            .map(|v| v * TWIP_TO_PX);
                     }
                 }
                 b"w:num" => cur_num = get_attr(&e, b"w:numId").and_then(|s| s.parse().ok()),
                 b"w:abstractNumId" => {
-                    if let (Some(n), Some(a)) = (cur_num, get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok())) {
+                    if let (Some(n), Some(a)) = (
+                        cur_num,
+                        get_attr(&e, b"w:val").and_then(|s| s.parse::<u32>().ok()),
+                    ) {
                         nb.num_to_abstract.insert(n, a);
                     }
                 }
@@ -1487,7 +1727,9 @@ fn parse_numbering_xml(xml: &str) -> Numbering {
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
                 b"w:lvl" => {
-                    if let (Some(a), Some(il), Some(l)) = (cur_abstract, cur_ilvl.take(), cur_lvl.take()) {
+                    if let (Some(a), Some(il), Some(l)) =
+                        (cur_abstract, cur_ilvl.take(), cur_lvl.take())
+                    {
                         nb.abstracts.entry(a).or_default().insert(il, l);
                     }
                 }
@@ -1543,8 +1785,19 @@ fn roman(v: i32, upper: bool) -> String {
         return v.to_string();
     }
     const T: [(i32, &str); 13] = [
-        (1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"),
-        (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i"),
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
     ];
     let mut n = v;
     let mut out = String::new();
@@ -1572,15 +1825,27 @@ fn bullet_char(text: &str) -> String {
     mapped.to_string()
 }
 
-fn substitute(text: &str, num_id: u32, abstract_id: u32, nb: &Numbering, counters: &HashMap<(u32, u32), i32>) -> String {
+fn substitute(
+    text: &str,
+    num_id: u32,
+    abstract_id: u32,
+    nb: &Numbering,
+    counters: &HashMap<(u32, u32), i32>,
+) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '%' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
             let ref_ilvl = chars[i + 1].to_digit(10).unwrap().saturating_sub(1);
-            let lvl = nb.abstracts.get(&abstract_id).and_then(|m| m.get(&ref_ilvl));
-            let val = counters.get(&(num_id, ref_ilvl)).copied().unwrap_or_else(|| lvl.map(|l| l.start).unwrap_or(1));
+            let lvl = nb
+                .abstracts
+                .get(&abstract_id)
+                .and_then(|m| m.get(&ref_ilvl));
+            let val = counters
+                .get(&(num_id, ref_ilvl))
+                .copied()
+                .unwrap_or_else(|| lvl.map(|l| l.start).unwrap_or(1));
             let fmt = lvl.map(|l| l.fmt).unwrap_or(NumFmt::Decimal);
             out.push_str(&fmt_counter(fmt, val));
             i += 2;
@@ -1621,7 +1886,11 @@ fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
         let entry = counters.entry((num_id, ilvl)).or_insert(lvl.start - 1);
         *entry += 1;
         // reset deeper levels of this list
-        let deeper: Vec<(u32, u32)> = counters.keys().filter(|(n, l)| *n == num_id && *l > ilvl).copied().collect();
+        let deeper: Vec<(u32, u32)> = counters
+            .keys()
+            .filter(|(n, l)| *n == num_id && *l > ilvl)
+            .copied()
+            .collect();
         for k in deeper {
             counters.remove(&k);
         }
@@ -1631,8 +1900,15 @@ fn resolve_numbering(doc: &mut Document, nb: &Numbering) {
             NumFmt::None_ => String::new(),
             _ => substitute(&lvl.text, num_id, abstract_id, nb, &counters),
         };
-        para.marker = if marker.is_empty() { None } else { Some(marker) };
-        para.indent = para.d_ind_left.or(lvl.ind_left).unwrap_or(((ilvl + 1) as f32) * 36.0);
+        para.marker = if marker.is_empty() {
+            None
+        } else {
+            Some(marker)
+        };
+        para.indent = para
+            .d_ind_left
+            .or(lvl.ind_left)
+            .unwrap_or(((ilvl + 1) as f32) * 36.0);
         para.hanging = para.d_ind_hanging.or(lvl.ind_hanging).unwrap_or(18.0);
     }
 }
@@ -1667,8 +1943,8 @@ struct ImageBox {
 /// coords relative to the line's top-left, at zoom 1.
 #[derive(Default)]
 struct TableDraw {
-    rects: Vec<(f32, f32, f32, f32, Color)>,          // x,y,w,h,color
-    glyphs: Vec<(u32, f32, f32, f32, Color, bool, usize)>,   // gid, x, y(baseline), size, color, bold
+    rects: Vec<(f32, f32, f32, f32, Color)>, // x,y,w,h,color
+    glyphs: Vec<LaidGlyph>,                  // gid, x, y(baseline), size, color, bold
 }
 
 /// A laid-out line at zoom 1. `top` is the cumulative content-y of its top edge.
@@ -1720,7 +1996,14 @@ fn next_tab_stop(x: f32, margin_l: f32, stops: &[(f32, Align)]) -> (f32, Align) 
 
 /// Place a wrapped line's items into glyphs, honouring tab stops + alignment
 /// (left advances to the stop, centre/right align the following segment to it).
-fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)], extra: f32, out: &mut Vec<PlacedGlyph>) {
+fn place_items(
+    line: &[Item],
+    x_start: f32,
+    margin_l: f32,
+    stops: &[(f32, Align)],
+    extra: f32,
+    out: &mut Vec<PlacedGlyph>,
+) {
     let mut x = x_start;
     let mut i = 0;
     while i < line.len() {
@@ -1731,7 +2014,11 @@ fn place_items(line: &[Item], x_start: f32, margin_l: f32, stops: &[(f32, Align)
             while j < line.len() && line[j].kind != IKind::Tab {
                 j += 1;
             }
-            let w: f32 = line[i + 1..j].iter().filter(|t| t.kind == IKind::Glyph).map(|t| t.advance).sum();
+            let w: f32 = line[i + 1..j]
+                .iter()
+                .filter(|t| t.kind == IKind::Glyph)
+                .map(|t| t.advance)
+                .sum();
             x = match al {
                 Align::Left | Align::Justify => pos,
                 Align::Center => (pos - w / 2.0).max(x),
@@ -1824,10 +2111,21 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
                 w = content_w;
             }
             let has_text = para.runs.iter().any(|r| !r.text.is_empty());
-            let space = if has_text { 0.0 } else { para.spc_after.max(max_para_size(para) * 0.3) };
+            let space = if has_text {
+                0.0
+            } else {
+                para.spc_after.max(max_para_size(para) * 0.3)
+            };
             lines.push(Line {
                 placed: Vec::new(),
-                image: Some(ImageBox { rgba: img.rgba.clone(), src_w: img.width, src_h: img.height, x: body_left, w, h }),
+                image: Some(ImageBox {
+                    rgba: img.rgba.clone(),
+                    src_w: img.width,
+                    src_h: img.height,
+                    x: body_left,
+                    w,
+                    h,
+                }),
                 table: None,
                 top,
                 line_h: h,
@@ -1848,8 +2146,16 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
             // else fall through: lay out the paragraph's text below the image
         }
 
-        let bdr_top = if para.pbdr.top { Some((para.pbdr.color, para.pbdr.size)) } else { None };
-        let bdr_bottom = if para.pbdr.bottom { Some((para.pbdr.color, para.pbdr.size)) } else { None };
+        let bdr_top = if para.pbdr.top {
+            Some((para.pbdr.color, para.pbdr.size))
+        } else {
+            None
+        };
+        let bdr_bottom = if para.pbdr.bottom {
+            Some((para.pbdr.color, para.pbdr.size))
+        } else {
+            None
+        };
 
         let items = shape_para(fonts, para);
         if items.is_empty() {
@@ -1880,7 +2186,14 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
             let line_h = para_line_h(para, max_size);
             let lw = line_width(line);
             // first-line indent (only li==0, left/justify, no list marker)
-            let fl_ind = if li == 0 && matches!(para.align, Align::Left | Align::Justify) && para.marker.is_none() { para.d_ind_first } else { 0.0 };
+            let fl_ind = if li == 0
+                && matches!(para.align, Align::Left | Align::Justify)
+                && para.marker.is_none()
+            {
+                para.d_ind_first
+            } else {
+                0.0
+            };
             let x = match para.align {
                 Align::Left | Align::Justify => body_left + fl_ind,
                 Align::Center => body_left + (content_w - lw) / 2.0,
@@ -1889,9 +2202,18 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
             // Justify: distribute the line's slack across its break opportunities
             // (every non-last line of a justified paragraph that has a tab is left alone).
             let has_tab = line.iter().any(|i| i.kind == IKind::Tab);
-            let extra = if para.align == Align::Justify && li + 1 != n && !has_tab && content_w > lw {
-                let nb = line.iter().filter(|i| i.kind == IKind::Glyph && i.break_after).count().saturating_sub(1);
-                if nb > 0 { (content_w - lw - fl_ind) / nb as f32 } else { 0.0 }
+            let extra = if para.align == Align::Justify && li + 1 != n && !has_tab && content_w > lw
+            {
+                let nb = line
+                    .iter()
+                    .filter(|i| i.kind == IKind::Glyph && i.break_after)
+                    .count()
+                    .saturating_sub(1);
+                if nb > 0 {
+                    (content_w - lw - fl_ind) / nb as f32
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
@@ -1906,7 +2228,11 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
                     // glyphs ■/●/▪ as Word does); only fall back to the symbol font if
                     // the body font lacks the glyph.
                     let mchar = marker.chars().next().unwrap_or(' ');
-                    let mfont = if fonts.covers(0, mchar) { 0 } else { fonts.idx_for(None, None, mchar) };
+                    let mfont = if fonts.covers(0, mchar) {
+                        0
+                    } else {
+                        fonts.idx_for(None, None, mchar)
+                    };
                     let shaped = shape(fonts.get(mfont), marker, msize);
                     let sc = msize / shaped.units_per_em.max(1.0);
                     let mut mx = body_left - para.hanging;
@@ -1944,7 +2270,11 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
                 bdr_bottom: if li + 1 == n { bdr_bottom } else { None },
                 left: body_left,
                 right,
-                force_break_before: if li == 0 { std::mem::take(&mut consume_break) } else { false },
+                force_break_before: if li == 0 {
+                    std::mem::take(&mut consume_break)
+                } else {
+                    false
+                },
                 keep_lines: kl && li + 1 < n,
             });
             top += advance;
@@ -1955,7 +2285,7 @@ fn layout_lines(doc: &mut Document, fonts: &Fonts) -> (Vec<Line>, Vec<Float>) {
 
 /// Lay out a block list's paragraphs into glyphs (relative to the content origin)
 /// and return them plus the content height. Used for table cells + text boxes.
-fn layout_cell(blocks: &[Block], fonts: &Fonts, width: f32) -> (Vec<(u32, f32, f32, f32, Color, bool, usize)>, f32) {
+fn layout_cell(blocks: &[Block], fonts: &Fonts, width: f32) -> (Vec<LaidGlyph>, f32) {
     let mut glyphs = Vec::new();
     let mut y = 0.0f32;
     let w = width.max(8.0);
@@ -1990,7 +2320,15 @@ fn layout_cell(blocks: &[Block], fonts: &Fonts, width: f32) -> (Vec<(u32, f32, f
                 if it.kind == IKind::Break {
                     continue;
                 }
-                glyphs.push((it.gid, x + it.x_off, baseline, it.size, it.color, it.bold, it.font));
+                glyphs.push((
+                    it.gid,
+                    x + it.x_off,
+                    baseline,
+                    it.size,
+                    it.color,
+                    it.bold,
+                    it.font,
+                ));
                 x += it.advance;
             }
             y += line_h + if li + 1 == n { para.spc_after } else { 0.0 };
@@ -2001,13 +2339,26 @@ fn layout_cell(blocks: &[Block], fonts: &Fonts, width: f32) -> (Vec<(u32, f32, f
 
 /// Lay out a table as a sequence of row-band `Line`s (row-atomic for pagination).
 #[allow(clippy::too_many_arguments)]
-fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, fonts: &Fonts, lines: &mut Vec<Line>, mut top: f32) -> f32 {
+fn layout_table_block(
+    t: &Table,
+    page_w: f32,
+    margin_l: f32,
+    margin_r: f32,
+    fonts: &Fonts,
+    lines: &mut Vec<Line>,
+    mut top: f32,
+) -> f32 {
     let content_w = (page_w - margin_l - margin_r).max(32.0);
 
     // Column widths: from tblGrid, scaled to fit content width.
     let mut cols = t.grid.clone();
     if cols.is_empty() {
-        let n = t.rows.first().map(|r| r.cells.iter().map(|c| c.grid_span as usize).sum::<usize>()).unwrap_or(1).max(1);
+        let n = t
+            .rows
+            .first()
+            .map(|r| r.cells.iter().map(|c| c.grid_span as usize).sum::<usize>())
+            .unwrap_or(1)
+            .max(1);
         cols = vec![content_w / n as f32; n];
     }
     let total: f32 = cols.iter().sum();
@@ -2056,7 +2407,7 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
     for (ri, row) in t.rows.iter().enumerate() {
         // Lay out each cell; track its column span + glyphs + content height.
         let mut ci = 0usize;
-        let mut cell_lay: Vec<(usize, usize, Vec<(u32, f32, f32, f32, Color, bool, usize)>, f32, &Cell)> = Vec::new();
+        let mut cell_lay: Vec<(usize, usize, Vec<LaidGlyph>, f32, &Cell)> = Vec::new();
         let mut row_content_h = 0.0f32;
         for cell in &row.cells {
             if ci >= ncols {
@@ -2076,7 +2427,9 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             row_content_h = row_content_h.max(h);
             cell_lay.push((c0, c1, glyphs, h, cell));
         }
-        let row_h = (row_content_h + mt + mb).max(row.min_h).max(DEFAULT_SIZE_PX);
+        let row_h = (row_content_h + mt + mb)
+            .max(row.min_h)
+            .max(DEFAULT_SIZE_PX);
 
         // Build the row band's draw list.
         let mut td = TableDraw::default();
@@ -2090,23 +2443,41 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             // borders (cell override else table outer/inner)
             let is_continue = cell.vmerge == VMerge::Continue;
             let bt = pick(cell.borders.top, t.borders.top, t.borders.inside_h, ri == 0);
-            let bb = pick(cell.borders.bottom, t.borders.bottom, t.borders.inside_h, ri + 1 == n_rows);
-            let bl = pick(cell.borders.left, t.borders.left, t.borders.inside_v, *c0 == 0);
-            let br = pick(cell.borders.right, t.borders.right, t.borders.inside_v, *c1 == ncols);
+            let bb = pick(
+                cell.borders.bottom,
+                t.borders.bottom,
+                t.borders.inside_h,
+                ri + 1 == n_rows,
+            );
+            let bl = pick(
+                cell.borders.left,
+                t.borders.left,
+                t.borders.inside_v,
+                *c0 == 0,
+            );
+            let br = pick(
+                cell.borders.right,
+                t.borders.right,
+                t.borders.inside_v,
+                *c1 == ncols,
+            );
             // Suppress the shared horizontal edge between a vMerge restart/continue
             // and the continue cell directly below it (so a merged cell reads as one).
-            let spans_down = ri + 1 < n_rows && col_cont.get(ri + 1).and_then(|m| m.get(c0)).copied() == Some(true);
+            let spans_down = ri + 1 < n_rows
+                && col_cont.get(ri + 1).and_then(|m| m.get(c0)).copied() == Some(true);
             if bt.on && !is_continue {
                 td.rects.push((x, 0.0, cell_w, bt.size, bt.color));
             }
             if bb.on && !spans_down {
-                td.rects.push((x, row_h - bb.size, cell_w, bb.size, bb.color));
+                td.rects
+                    .push((x, row_h - bb.size, cell_w, bb.size, bb.color));
             }
             if bl.on {
                 td.rects.push((x, 0.0, bl.size, row_h, bl.color));
             }
             if br.on {
-                td.rects.push((x + cell_w - br.size, 0.0, br.size, row_h, br.color));
+                td.rects
+                    .push((x + cell_w - br.size, 0.0, br.size, row_h, br.color));
             }
             // glyphs: offset to cell content origin + vertical alignment
             let vshift = match cell.valign {
@@ -2115,7 +2486,8 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
                 _ => 0.0,
             };
             for (gid, gx, gy, sz, col, bold, fnt) in glyphs {
-                td.glyphs.push((*gid, x + ml + gx, mt + vshift + gy, *sz, *col, *bold, *fnt));
+                td.glyphs
+                    .push((*gid, x + ml + gx, mt + vshift + gy, *sz, *col, *bold, *fnt));
             }
         }
 
@@ -2133,7 +2505,8 @@ fn layout_table_block(t: &Table, page_w: f32, margin_l: f32, margin_r: f32, font
             left: table_left,
             right: table_left + col_x[ncols],
             force_break_before: false,
-            keep_lines: !row.is_header && false,
+            // Table rows aren't kept-with-next yet (would later key off row.is_header).
+            keep_lines: false,
         });
         top += row_h;
     }
@@ -2148,7 +2521,17 @@ struct HdrFtr {
 }
 
 /// Parse + lay out a header/footer part (`word/headerN.xml`).
-fn build_hdrftr(bytes: &[u8], part: &str, fonts: &Fonts, table: &StyleTable, nb: &Numbering, page_w: f32, ml: f32, mr: f32) -> Option<HdrFtr> {
+#[allow(clippy::too_many_arguments)]
+fn build_hdrftr(
+    bytes: &[u8],
+    part: &str,
+    fonts: &Fonts,
+    table: &StyleTable,
+    nb: &Numbering,
+    page_w: f32,
+    ml: f32,
+    mr: f32,
+) -> Option<HdrFtr> {
     let xml = read_zip_entry(bytes, part)?;
     let mut doc = parse_document(&xml);
     doc.page_w = page_w;
@@ -2167,13 +2550,20 @@ fn build_hdrftr(bytes: &[u8], part: &str, fonts: &Fonts, table: &StyleTable, nb:
     }
     resolve_document(&mut doc, table);
     resolve_numbering(&mut doc, nb);
-    let rels = part.rsplit_once('/').map(|(d, f)| format!("{}/_rels/{}.rels", d, f)).unwrap_or_default();
+    let rels = part
+        .rsplit_once('/')
+        .map(|(d, f)| format!("{}/_rels/{}.rels", d, f))
+        .unwrap_or_default();
     resolve_images(&mut doc, bytes, &rels);
     let (lines, floats) = layout_lines(&mut doc, fonts);
     let line_h = lines.last().map(|l| l.top + l.line_h).unwrap_or(0.0);
     let float_h = floats.iter().map(|f| f.off_y + f.img_h).fold(0.0, f32::max);
     let height = line_h.max(float_h);
-    Some(HdrFtr { lines, floats, height })
+    Some(HdrFtr {
+        lines,
+        floats,
+        height,
+    })
 }
 
 /// Emit one line's glyphs (grouped by run style) at a device `baseline`/`scale`.
@@ -2198,18 +2588,39 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
     // Table row band: pre-computed rects (fills + borders) then cell glyphs.
     if let Some(td) = &line.table {
         for (x, y, w, h, c) in &td.rects {
-            dl.push(fill_box(x * scale, top_y + y * scale, w * scale, h * scale, *c));
+            dl.push(fill_box(
+                x * scale,
+                top_y + y * scale,
+                w * scale,
+                h * scale,
+                *c,
+            ));
         }
         let mut i = 0;
         while i < td.glyphs.len() {
             let (_, _, _, sz, col, bold, fnt) = td.glyphs[i];
             let mut glyphs = Vec::new();
-            while i < td.glyphs.len() && td.glyphs[i].3 == sz && td.glyphs[i].4 == col && td.glyphs[i].5 == bold && td.glyphs[i].6 == fnt {
+            while i < td.glyphs.len()
+                && td.glyphs[i].3 == sz
+                && td.glyphs[i].4 == col
+                && td.glyphs[i].5 == bold
+                && td.glyphs[i].6 == fnt
+            {
                 let (gid, gx, gy, ..) = td.glyphs[i];
-                glyphs.push(PositionedGlyph { id: gid, x: gx * scale, y: top_y + gy * scale });
+                glyphs.push(PositionedGlyph {
+                    id: gid,
+                    x: gx * scale,
+                    y: top_y + gy * scale,
+                });
                 i += 1;
             }
-            dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size: sz * scale, paint: Paint::Solid(col), bold, glyphs }));
+            dl.push(Command::Glyphs(GlyphRun {
+                font: FontId(fnt as u32),
+                size: sz * scale,
+                paint: Paint::Solid(col),
+                bold,
+                glyphs,
+            }));
         }
         return;
     }
@@ -2224,7 +2635,13 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
         dl.push(fill_box(lx, top_y, rx - lx, (w * scale).max(1.0), c));
     }
     if let Some((c, w)) = line.bdr_bottom {
-        dl.push(fill_box(lx, bot_y - (w * scale).max(1.0), rx - lx, (w * scale).max(1.0), c));
+        dl.push(fill_box(
+            lx,
+            bot_y - (w * scale).max(1.0),
+            rx - lx,
+            (w * scale).max(1.0),
+            c,
+        ));
     }
 
     // Run highlight backgrounds (group consecutive glyphs sharing a highlight).
@@ -2240,7 +2657,13 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
             i += 1;
         }
         if let Some(c) = hl {
-            dl.push(fill_box(x0 * scale, baseline - sz * 0.82 * scale, (x1 - x0) * scale, sz * 1.02 * scale, c));
+            dl.push(fill_box(
+                x0 * scale,
+                baseline - sz * 0.82 * scale,
+                (x1 - x0) * scale,
+                sz * 1.02 * scale,
+                c,
+            ));
         }
     }
 
@@ -2256,21 +2679,39 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
             && line.placed[i].vshift == g0.vshift
             && line.placed[i].font == g0.font
         {
-            glyphs.push(PositionedGlyph { id: line.placed[i].id, x: line.placed[i].x * scale, y: baseline + g0.vshift * scale });
+            glyphs.push(PositionedGlyph {
+                id: line.placed[i].id,
+                x: line.placed[i].x * scale,
+                y: baseline + g0.vshift * scale,
+            });
             i += 1;
         }
-        dl.push(Command::Glyphs(GlyphRun { font: FontId(g0.font as u32), size: g0.size * scale, paint: Paint::Solid(g0.color), bold: g0.bold, glyphs }));
+        dl.push(Command::Glyphs(GlyphRun {
+            font: FontId(g0.font as u32),
+            size: g0.size * scale,
+            paint: Paint::Solid(g0.color),
+            bold: g0.bold,
+            glyphs,
+        }));
     }
 
     // Underline / strike rules (group consecutive runs sharing the decoration).
     for deco in 0..2 {
         let mut i = 0;
         while i < line.placed.len() {
-            let on = if deco == 0 { line.placed[i].underline } else { line.placed[i].strike };
+            let on = if deco == 0 {
+                line.placed[i].underline
+            } else {
+                line.placed[i].strike
+            };
             let x0 = line.placed[i].x;
             let (mut x1, mut sz, col) = (x0, line.placed[i].size, line.placed[i].color);
             while i < line.placed.len()
-                && (if deco == 0 { line.placed[i].underline } else { line.placed[i].strike }) == on
+                && (if deco == 0 {
+                    line.placed[i].underline
+                } else {
+                    line.placed[i].strike
+                }) == on
                 && line.placed[i].color == col
             {
                 x1 = line.placed[i].x + line.placed[i].advance;
@@ -2278,8 +2719,18 @@ fn emit_line(dl: &mut DisplayList, line: &Line, baseline: f32, scale: f32) {
                 i += 1;
             }
             if on && x1 > x0 {
-                let y = if deco == 0 { baseline + sz * 0.12 * scale } else { baseline - sz * 0.28 * scale };
-                dl.push(fill_box(x0 * scale, y, (x1 - x0) * scale, (sz * 0.06 * scale).max(1.0), col));
+                let y = if deco == 0 {
+                    baseline + sz * 0.12 * scale
+                } else {
+                    baseline - sz * 0.28 * scale
+                };
+                dl.push(fill_box(
+                    x0 * scale,
+                    y,
+                    (x1 - x0) * scale,
+                    (sz * 0.06 * scale).max(1.0),
+                    col,
+                ));
             }
         }
     }
@@ -2314,7 +2765,11 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
         (0.0, 0.0)
     };
     for sh in &fl.shapes {
-        let (sx, sy) = if fl.grouped { (sh.x - gmin_x + fx, sh.y - gmin_y + fy) } else { (fx, fy) };
+        let (sx, sy) = if fl.grouped {
+            (sh.x - gmin_x + fx, sh.y - gmin_y + fy)
+        } else {
+            (fx, fy)
+        };
         // custGeom freeform path (e.g. the curved connector lines): map the path's
         // own [0..path_w]x[0..path_h] space into the shape box and stroke it.
         if !sh.path.is_empty() && sh.path_w > 0.0 && sh.path_h > 0.0 {
@@ -2332,16 +2787,36 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
                 match seg {
                     PathSeg::Move(x, y) => p.move_to(mx(*x), my(*y)),
                     PathSeg::Line(x, y) => p.line_to(mx(*x), my(*y)),
-                    PathSeg::Cubic(x1, y1, x2, y2, x, y) => p.cubic_to(mx(*x1), my(*y1), mx(*x2), my(*y2), mx(*x), my(*y)),
+                    PathSeg::Cubic(x1, y1, x2, y2, x, y) => {
+                        p.cubic_to(mx(*x1), my(*y1), mx(*x2), my(*y2), mx(*x), my(*y))
+                    }
                     PathSeg::Quad(cx, cy, x, y) => p.quad_to(mx(*cx), my(*cy), mx(*x), my(*y)),
                     PathSeg::Close => p.close(),
                 }
             }
-            let (col, w) = sh.outline.or(sh.fill.map(|f| (f, 1.0))).unwrap_or((Color { r: 0x80, g: 0x80, b: 0x80, a: 255 }, 1.0));
+            let (col, w) = sh.outline.or(sh.fill.map(|f| (f, 1.0))).unwrap_or((
+                Color {
+                    r: 0x80,
+                    g: 0x80,
+                    b: 0x80,
+                    a: 255,
+                },
+                1.0,
+            ));
             if let Some(c) = sh.fill {
-                dl.push(Command::FillPath { path: p.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+                dl.push(Command::FillPath {
+                    path: p.clone(),
+                    paint: Paint::Solid(c),
+                    fill_rule: dv_ir::FillRule::NonZero,
+                    transform: dv_ir::Transform::IDENTITY,
+                });
             }
-            dl.push(Command::StrokePath { path: p, paint: Paint::Solid(col), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+            dl.push(Command::StrokePath {
+                path: p,
+                paint: Paint::Solid(col),
+                width: (w * scale).max(1.0),
+                transform: dv_ir::Transform::IDENTITY,
+            });
             continue;
         }
         if sh.is_line {
@@ -2352,26 +2827,58 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
                 let (mut x0, mut y0, mut x1, mut y1);
                 if sh.h > sh.w * 2.0 {
                     let mx = sx + sh.w / 2.0;
-                    x0 = mx; x1 = mx; y0 = sy; y1 = sy + sh.h;
+                    x0 = mx;
+                    x1 = mx;
+                    y0 = sy;
+                    y1 = sy + sh.h;
                 } else if sh.w > sh.h * 2.0 {
                     let my = sy + sh.h / 2.0;
-                    x0 = sx; x1 = sx + sh.w; y0 = my; y1 = my;
+                    x0 = sx;
+                    x1 = sx + sh.w;
+                    y0 = my;
+                    y1 = my;
                 } else {
-                    x0 = sx; x1 = sx + sh.w; y0 = sy; y1 = sy + sh.h;
-                    if sh.flip_h { std::mem::swap(&mut x0, &mut x1); }
-                    if sh.flip_v { std::mem::swap(&mut y0, &mut y1); }
+                    x0 = sx;
+                    x1 = sx + sh.w;
+                    y0 = sy;
+                    y1 = sy + sh.h;
+                    if sh.flip_h {
+                        std::mem::swap(&mut x0, &mut x1);
+                    }
+                    if sh.flip_v {
+                        std::mem::swap(&mut y0, &mut y1);
+                    }
                 }
                 let mut p = dv_ir::PathData::new();
                 p.move_to(x0 * scale, y0 * scale);
                 p.line_to(x1 * scale, y1 * scale);
-                dl.push(Command::StrokePath { path: p, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+                dl.push(Command::StrokePath {
+                    path: p,
+                    paint: Paint::Solid(c),
+                    width: (w * scale).max(1.0),
+                    transform: dv_ir::Transform::IDENTITY,
+                });
                 // arrowheads (filled triangles) at the connector's ends
                 let head = (8.0 + w * 2.0) * scale;
                 if sh.arrow_tail {
-                    dl.push(arrow_head_tri(x1 * scale, y1 * scale, x0 * scale, y0 * scale, head, c));
+                    dl.push(arrow_head_tri(
+                        x1 * scale,
+                        y1 * scale,
+                        x0 * scale,
+                        y0 * scale,
+                        head,
+                        c,
+                    ));
                 }
                 if sh.arrow_head {
-                    dl.push(arrow_head_tri(x0 * scale, y0 * scale, x1 * scale, y1 * scale, head, c));
+                    dl.push(arrow_head_tri(
+                        x0 * scale,
+                        y0 * scale,
+                        x1 * scale,
+                        y1 * scale,
+                        head,
+                        c,
+                    ));
                 }
             }
             continue;
@@ -2421,14 +2928,24 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
                     tp.line_to(tipx * scale, tipy * scale);
                     tp.line_to(b2.0 * scale, b2.1 * scale);
                     tp.close();
-                    dl.push(Command::FillPath { path: tp.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+                    dl.push(Command::FillPath {
+                        path: tp.clone(),
+                        paint: Paint::Solid(c),
+                        fill_rule: dv_ir::FillRule::NonZero,
+                        transform: dv_ir::Transform::IDENTITY,
+                    });
                     if let Some((oc, w)) = sh.outline {
                         // stroke only the two slanted sides (not the base, which the body covers)
                         let mut e1 = dv_ir::PathData::new();
                         e1.move_to(b1.0 * scale, b1.1 * scale);
                         e1.line_to(tipx * scale, tipy * scale);
                         e1.line_to(b2.0 * scale, b2.1 * scale);
-                        dl.push(Command::StrokePath { path: e1, paint: Paint::Solid(oc), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+                        dl.push(Command::StrokePath {
+                            path: e1,
+                            paint: Paint::Solid(oc),
+                            width: (w * scale).max(1.0),
+                            transform: dv_ir::Transform::IDENTITY,
+                        });
                     }
                 }
             }
@@ -2436,21 +2953,49 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
             let r = (sh.w.min(sh.h) * 0.22).min(12.0) * scale;
             let path = round_rect_path(sx * scale, sy * scale, sh.w * scale, sh.h * scale, r);
             if let Some(c) = sh.fill {
-                dl.push(Command::FillPath { path: path.clone(), paint: Paint::Solid(c), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY });
+                dl.push(Command::FillPath {
+                    path: path.clone(),
+                    paint: Paint::Solid(c),
+                    fill_rule: dv_ir::FillRule::NonZero,
+                    transform: dv_ir::Transform::IDENTITY,
+                });
             }
             if let Some((c, w)) = sh.outline {
-                dl.push(Command::StrokePath { path, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
+                dl.push(Command::StrokePath {
+                    path,
+                    paint: Paint::Solid(c),
+                    width: (w * scale).max(1.0),
+                    transform: dv_ir::Transform::IDENTITY,
+                });
             }
         } else {
             if let Some(c) = sh.fill {
-                dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, sh.h * scale, c));
+                dl.push(fill_box(
+                    sx * scale,
+                    sy * scale,
+                    sh.w * scale,
+                    sh.h * scale,
+                    c,
+                ));
             }
             if let Some((c, w)) = sh.outline {
                 let t = (w * scale).max(1.0);
                 dl.push(fill_box(sx * scale, sy * scale, sh.w * scale, t, c));
-                dl.push(fill_box(sx * scale, (sy + sh.h) * scale - t, sh.w * scale, t, c));
+                dl.push(fill_box(
+                    sx * scale,
+                    (sy + sh.h) * scale - t,
+                    sh.w * scale,
+                    t,
+                    c,
+                ));
                 dl.push(fill_box(sx * scale, sy * scale, t, sh.h * scale, c));
-                dl.push(fill_box((sx + sh.w) * scale - t, sy * scale, t, sh.h * scale, c));
+                dl.push(fill_box(
+                    (sx + sh.w) * scale - t,
+                    sy * scale,
+                    t,
+                    sh.h * scale,
+                    c,
+                ));
             }
         }
         // text box content, vertically centred, with a small inset
@@ -2461,12 +3006,27 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
         while i < sh.glyphs.len() {
             let (_, _, _, size, color, bold, fnt) = sh.glyphs[i];
             let mut run = Vec::new();
-            while i < sh.glyphs.len() && sh.glyphs[i].3 == size && sh.glyphs[i].4 == color && sh.glyphs[i].5 == bold && sh.glyphs[i].6 == fnt {
+            while i < sh.glyphs.len()
+                && sh.glyphs[i].3 == size
+                && sh.glyphs[i].4 == color
+                && sh.glyphs[i].5 == bold
+                && sh.glyphs[i].6 == fnt
+            {
                 let (gid, gx, gy, ..) = sh.glyphs[i];
-                run.push(PositionedGlyph { id: gid, x: (gx0 + gx) * scale, y: (gy0 + gy) * scale });
+                run.push(PositionedGlyph {
+                    id: gid,
+                    x: (gx0 + gx) * scale,
+                    y: (gy0 + gy) * scale,
+                });
                 i += 1;
             }
-            dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size: size * scale, paint: Paint::Solid(color), bold, glyphs: run }));
+            dl.push(Command::Glyphs(GlyphRun {
+                font: FontId(fnt as u32),
+                size: size * scale,
+                paint: Paint::Solid(color),
+                bold,
+                glyphs: run,
+            }));
         }
     }
 }
@@ -2479,7 +3039,12 @@ fn fill_box(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x + w, y + h);
     p.line_to(x, y + h);
     p.close();
-    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY }
+    Command::FillPath {
+        path: p,
+        paint: Paint::Solid(color),
+        fill_rule: dv_ir::FillRule::NonZero,
+        transform: dv_ir::Transform::IDENTITY,
+    }
 }
 
 /// A filled arrowhead triangle whose tip is at (tx,ty), pointing away from (fx,fy).
@@ -2495,7 +3060,12 @@ fn arrow_head_tri(tx: f32, ty: f32, fx: f32, fy: f32, size: f32, color: Color) -
     p.line_to(bx + px * half, by + py * half);
     p.line_to(bx - px * half, by - py * half);
     p.close();
-    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: dv_ir::FillRule::NonZero, transform: dv_ir::Transform::IDENTITY }
+    Command::FillPath {
+        path: p,
+        paint: Paint::Solid(color),
+        fill_rule: dv_ir::FillRule::NonZero,
+        transform: dv_ir::Transform::IDENTITY,
+    }
 }
 
 /// Rounded-rectangle path (device coords), used for callout/roundRect shapes.
@@ -2522,14 +3092,19 @@ pub fn render_document(bytes: &[u8], font: &FontData) -> DisplayList {
         None => return DisplayList::new(816.0, 200.0),
     };
     let mut doc = parse_document(&xml);
-    let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
+    let table = read_zip_entry(bytes, "word/styles.xml")
+        .map(|s| parse_styles_xml(&s))
+        .unwrap_or_default();
     resolve_document(&mut doc, &table);
-    let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
+    let numbering = read_zip_entry(bytes, "word/numbering.xml")
+        .map(|s| parse_numbering_xml(&s))
+        .unwrap_or_default();
     resolve_numbering(&mut doc, &numbering);
     resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
     let fonts = Fonts::new(font.clone(), load_embedded_fonts(bytes));
     let (lines, floats) = layout_lines(&mut doc, &fonts);
-    let total_h = doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
+    let total_h =
+        doc.margin_t + lines.last().map(|l| l.top + l.advance).unwrap_or(0.0) + doc.margin_b;
     let mut dl = DisplayList::new(doc.page_w, total_h);
     for line in &lines {
         emit_line(&mut dl, line, doc.margin_t + line.top + line.ascent, 1.0);
@@ -2574,24 +3149,34 @@ impl DocxDoc {
     /// Parse with a default font plus caller-provided named fonts (e.g. a 標楷體
     /// the document declares but does not embed). Lookup order per run: embedded /
     /// caller name match -> script fallback -> default.
-    pub fn parse_with_fonts(bytes: &[u8], font: FontData, mut extra_fonts: Vec<(String, FontData)>) -> DocxDoc {
-        let mut doc = read_zip_entry(bytes, "word/document.xml").map(|x| parse_document(&x)).unwrap_or_else(|| Document {
-            blocks: Vec::new(),
-            page_w: 816.0,
-            page_h: 1056.0,
-            margin_l: 96.0,
-            margin_r: 96.0,
-            margin_t: 96.0,
-            margin_b: 96.0,
-            header_dist: 48.0,
-            footer_dist: 48.0,
-            hdr_refs: Vec::new(),
-            ftr_refs: Vec::new(),
-            title_pg: false,
-        });
-        let table = read_zip_entry(bytes, "word/styles.xml").map(|s| parse_styles_xml(&s)).unwrap_or_default();
+    pub fn parse_with_fonts(
+        bytes: &[u8],
+        font: FontData,
+        mut extra_fonts: Vec<(String, FontData)>,
+    ) -> DocxDoc {
+        let mut doc = read_zip_entry(bytes, "word/document.xml")
+            .map(|x| parse_document(&x))
+            .unwrap_or_else(|| Document {
+                blocks: Vec::new(),
+                page_w: 816.0,
+                page_h: 1056.0,
+                margin_l: 96.0,
+                margin_r: 96.0,
+                margin_t: 96.0,
+                margin_b: 96.0,
+                header_dist: 48.0,
+                footer_dist: 48.0,
+                hdr_refs: Vec::new(),
+                ftr_refs: Vec::new(),
+                title_pg: false,
+            });
+        let table = read_zip_entry(bytes, "word/styles.xml")
+            .map(|s| parse_styles_xml(&s))
+            .unwrap_or_default();
         resolve_document(&mut doc, &table);
-        let numbering = read_zip_entry(bytes, "word/numbering.xml").map(|s| parse_numbering_xml(&s)).unwrap_or_default();
+        let numbering = read_zip_entry(bytes, "word/numbering.xml")
+            .map(|s| parse_numbering_xml(&s))
+            .unwrap_or_default();
         resolve_numbering(&mut doc, &numbering);
         resolve_images(&mut doc, bytes, "word/_rels/document.xml.rels");
         // Caller fonts first (so they win on name clash), then the file's embedded fonts.
@@ -2600,12 +3185,23 @@ impl DocxDoc {
         let (lines, floats) = layout_lines(&mut doc, &fonts);
 
         // Resolve + lay out header/footer parts (by reference type).
-        let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+        let doc_rels = read_zip_entry(bytes, "word/_rels/document.xml.rels")
+            .map(|s| rels_map(&s))
+            .unwrap_or_default();
         let part = |refs: &[(String, String)], ty: &str| -> Option<HdrFtr> {
             let id = refs.iter().find(|(t, _)| t == ty).map(|(_, id)| id)?;
             let target = doc_rels.get(id)?;
             let path = resolve_rel("word", target);
-            build_hdrftr(bytes, &path, &fonts, &table, &numbering, doc.page_w, doc.margin_l, doc.margin_r)
+            build_hdrftr(
+                bytes,
+                &path,
+                &fonts,
+                &table,
+                &numbering,
+                doc.page_w,
+                doc.margin_l,
+                doc.margin_r,
+            )
         };
         let hdr_first = part(&doc.hdr_refs, "first");
         let hdr_default = part(&doc.hdr_refs, "default");
@@ -2613,8 +3209,14 @@ impl DocxDoc {
         let ftr_default = part(&doc.ftr_refs, "default");
 
         // Reserve space so the body never overlaps a tall running header/footer.
-        let hdr_h = [&hdr_first, &hdr_default].iter().filter_map(|h| h.as_ref().map(|x| x.height)).fold(0.0f32, f32::max);
-        let ftr_h = [&ftr_first, &ftr_default].iter().filter_map(|f| f.as_ref().map(|x| x.height)).fold(0.0f32, f32::max);
+        let hdr_h = [&hdr_first, &hdr_default]
+            .iter()
+            .filter_map(|h| h.as_ref().map(|x| x.height))
+            .fold(0.0f32, f32::max);
+        let ftr_h = [&ftr_first, &ftr_default]
+            .iter()
+            .filter_map(|f| f.as_ref().map(|x| x.height))
+            .fold(0.0f32, f32::max);
         let body_top = doc.margin_t.max(doc.header_dist + hdr_h + 8.0);
         let body_bottom = doc.margin_b.max(doc.footer_dist + ftr_h + 8.0);
         let cap = (doc.page_h - body_top - body_bottom).max(32.0);
@@ -2638,14 +3240,22 @@ impl DocxDoc {
                         bp = i; // don't create an empty page
                     }
                 }
-                pages.push(Page { start, end: bp, top_y: page_top });
+                pages.push(Page {
+                    start,
+                    end: bp,
+                    top_y: page_top,
+                });
                 start = bp;
                 page_top = lines[bp].top;
                 used = lines[bp..i].iter().map(|l| l.advance).sum();
             }
             used += line.advance;
         }
-        pages.push(Page { start, end: lines.len(), top_y: page_top });
+        pages.push(Page {
+            start,
+            end: lines.len(),
+            top_y: page_top,
+        });
 
         DocxDoc {
             lines,
@@ -2681,28 +3291,51 @@ impl DocxDoc {
 
     /// Render page `idx` into a device-px display list at `scale` (= zoom × dpr).
     pub fn render_page(&self, idx: usize, scale: f32) -> DisplayList {
-        let mut dl = DisplayList::new((self.page_w * scale).max(1.0), (self.page_h * scale).max(1.0));
-        let Some(page) = self.pages.get(idx) else { return dl };
+        let mut dl = DisplayList::new(
+            (self.page_w * scale).max(1.0),
+            (self.page_h * scale).max(1.0),
+        );
+        let Some(page) = self.pages.get(idx) else {
+            return dl;
+        };
 
         // Header (first page uses the "first" header when titlePg is set).
         let first = idx == 0 && self.title_pg;
-        let hdr = if first { self.hdr_first.as_ref().or(self.hdr_default.as_ref()) } else { self.hdr_default.as_ref() };
+        let hdr = if first {
+            self.hdr_first.as_ref().or(self.hdr_default.as_ref())
+        } else {
+            self.hdr_default.as_ref()
+        };
         if let Some(h) = hdr {
             for fl in &h.floats {
                 render_float(&mut dl, fl, self.margin_l, self.header_dist, scale);
             }
             for line in &h.lines {
-                emit_line(&mut dl, line, (self.header_dist + line.top + line.ascent) * scale, scale);
+                emit_line(
+                    &mut dl,
+                    line,
+                    (self.header_dist + line.top + line.ascent) * scale,
+                    scale,
+                );
             }
         }
-        let ftr = if first { self.ftr_first.as_ref().or(self.ftr_default.as_ref()) } else { self.ftr_default.as_ref() };
+        let ftr = if first {
+            self.ftr_first.as_ref().or(self.ftr_default.as_ref())
+        } else {
+            self.ftr_default.as_ref()
+        };
         if let Some(f) = ftr {
             let foot_top = (self.page_h - self.footer_dist - f.height).max(self.page_h * 0.85);
             for fl in &f.floats {
                 render_float(&mut dl, fl, self.margin_l, foot_top, scale);
             }
             for line in &f.lines {
-                emit_line(&mut dl, line, (foot_top + line.top + line.ascent) * scale, scale);
+                emit_line(
+                    &mut dl,
+                    line,
+                    (foot_top + line.top + line.ascent) * scale,
+                    scale,
+                );
             }
         }
 
@@ -2713,7 +3346,11 @@ impl DocxDoc {
         }
 
         // Floating drawings anchored on this page.
-        let next_top = self.pages.get(idx + 1).map(|p| p.top_y).unwrap_or(f32::INFINITY);
+        let next_top = self
+            .pages
+            .get(idx + 1)
+            .map(|p| p.top_y)
+            .unwrap_or(f32::INFINITY);
         let dy = self.body_top - page.top_y;
         for fl in &self.floats {
             if fl.body_y >= page.top_y - 0.5 && fl.body_y < next_top {
@@ -2725,7 +3362,10 @@ impl DocxDoc {
 }
 
 fn max_para_size(para: &Para) -> f32 {
-    para.runs.iter().map(|r| r.size).fold(DEFAULT_SIZE_PX, f32::max)
+    para.runs
+        .iter()
+        .map(|r| r.size)
+        .fold(DEFAULT_SIZE_PX, f32::max)
 }
 
 fn read_zip_entry(bytes: &[u8], name: &str) -> Option<String> {
@@ -2746,7 +3386,11 @@ fn read_zip_bytes(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
 
 /// True if the bytes begin with a recognised sfnt font signature.
 fn is_font_magic(d: &[u8]) -> bool {
-    d.len() >= 4 && matches!(&d[..4], [0, 1, 0, 0] | b"OTTO" | b"true" | b"ttcf" | b"typ1")
+    d.len() >= 4
+        && matches!(
+            &d[..4],
+            [0, 1, 0, 0] | b"OTTO" | b"true" | b"ttcf" | b"typ1"
+        )
 }
 
 /// De-obfuscate an OOXML embedded font (.odttf): XOR the first 32 bytes with the
@@ -2776,7 +3420,9 @@ fn load_embedded_fonts(bytes: &[u8]) -> Vec<(String, FontData)> {
         Some(x) => x,
         None => return Vec::new(),
     };
-    let rels = read_zip_entry(bytes, "word/_rels/fontTable.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+    let rels = read_zip_entry(bytes, "word/_rels/fontTable.xml.rels")
+        .map(|s| rels_map(&s))
+        .unwrap_or_default();
     let mut out: Vec<(String, FontData)> = Vec::new();
     let mut reader = Reader::from_str(&xml);
     let mut cur_name: Option<String> = None;
@@ -2835,7 +3481,11 @@ fn resolve_rel(base_dir: &str, target: &str) -> String {
     if let Some(s) = target.strip_prefix('/') {
         return s.to_string();
     }
-    let mut parts: Vec<&str> = base_dir.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let mut parts: Vec<&str> = base_dir
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     for seg in target.split('/') {
         match seg {
             ".." => {
@@ -2929,9 +3579,18 @@ struct StyleTable {
 /// Synthetic fallback for common built-in styles referenced but not defined
 /// (lightweight generators often `pStyle="Heading1"` without a styles.xml entry).
 fn builtin_style(id: &str) -> Option<(RPr, PPr)> {
-    let bold = |s: Option<f32>| RPr { bold: Some(true), size: s, ..RPr::default() };
+    let bold = |s: Option<f32>| RPr {
+        bold: Some(true),
+        size: s,
+        ..RPr::default()
+    };
     match id {
-        "Title" => Some((bold(Some(28.0)), PPr { align: Some(Align::Center) })),
+        "Title" => Some((
+            bold(Some(28.0)),
+            PPr {
+                align: Some(Align::Center),
+            },
+        )),
         "Heading1" => Some((bold(Some(24.0)), PPr::default())),
         "Heading2" => Some((bold(Some(20.0)), PPr::default())),
         "Heading3" => Some((bold(Some(17.0)), PPr::default())),
@@ -2950,7 +3609,10 @@ fn parse_styles_xml(xml: &str) -> StyleTable {
     let mut cur: Option<Style> = None;
 
     let bold_val = |e: &BytesStart| -> bool {
-        !matches!(get_attr(e, b"w:val").as_deref(), Some("false") | Some("0") | Some("off"))
+        !matches!(
+            get_attr(e, b"w:val").as_deref(),
+            Some("false") | Some("0") | Some("off")
+        )
     };
 
     loop {
@@ -2963,7 +3625,12 @@ fn parse_styles_xml(xml: &str) -> StyleTable {
                         _ => StyleKind::Paragraph,
                     };
                     cur_id = get_attr(&e, b"w:styleId");
-                    cur = Some(Style { kind, based_on: None, rpr: RPr::default(), ppr: PPr::default() });
+                    cur = Some(Style {
+                        kind,
+                        based_on: None,
+                        rpr: RPr::default(),
+                        ppr: PPr::default(),
+                    });
                 }
                 b"w:basedOn" => {
                     if let Some(s) = cur.as_mut() {
@@ -2979,7 +3646,10 @@ fn parse_styles_xml(xml: &str) -> StyleTable {
                     }
                 }
                 b"w:sz" => {
-                    if let Some(px) = get_attr(&e, b"w:val").and_then(|s| s.parse::<f32>().ok()).map(|v| v * 2.0 / 3.0) {
+                    if let Some(px) = get_attr(&e, b"w:val")
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .map(|v| v * 2.0 / 3.0)
+                    {
                         if in_doc_defaults {
                             table.default_rpr.size = Some(px);
                         } else if let Some(s) = cur.as_mut() {
@@ -3044,13 +3714,26 @@ fn style_chain(table: &StyleTable, start: &str) -> Vec<String> {
 }
 
 fn style_rpr(table: &StyleTable, id: &str) -> RPr {
-    table.styles.get(id).map(|s| s.rpr.clone()).unwrap_or_else(|| builtin_style(id).map(|(r, _)| r).unwrap_or_default())
+    table
+        .styles
+        .get(id)
+        .map(|s| s.rpr.clone())
+        .unwrap_or_else(|| builtin_style(id).map(|(r, _)| r).unwrap_or_default())
 }
 fn style_align(table: &StyleTable, id: &str) -> Option<Align> {
-    table.styles.get(id).map(|s| s.ppr.align).unwrap_or_else(|| builtin_style(id).and_then(|(_, p)| p.align))
+    table
+        .styles
+        .get(id)
+        .map(|s| s.ppr.align)
+        .unwrap_or_else(|| builtin_style(id).and_then(|(_, p)| p.align))
 }
 
-fn resolve_run_rpr(table: &StyleTable, p_style: Option<&str>, r_style: Option<&str>, direct: &RPr) -> RPr {
+fn resolve_run_rpr(
+    table: &StyleTable,
+    p_style: Option<&str>,
+    r_style: Option<&str>,
+    direct: &RPr,
+) -> RPr {
     let mut acc = RPr::default();
     overlay_rpr(&mut acc, &table.default_rpr);
     if let Some(ps) = p_style {
@@ -3087,7 +3770,12 @@ fn resolve_one_para(para: &mut Para, table: &StyleTable) {
     para.align = resolve_para_align(table, para.p_style.as_deref(), &para.direct);
     let p_style = para.p_style.clone();
     for run in &mut para.runs {
-        let rpr = resolve_run_rpr(table, p_style.as_deref(), run.r_style.as_deref(), &run.direct);
+        let rpr = resolve_run_rpr(
+            table,
+            p_style.as_deref(),
+            run.r_style.as_deref(),
+            &run.direct,
+        );
         run.bold = rpr.bold.unwrap_or(false);
         run.italic = rpr.italic.unwrap_or(false);
         run.underline = rpr.underline.unwrap_or(false);

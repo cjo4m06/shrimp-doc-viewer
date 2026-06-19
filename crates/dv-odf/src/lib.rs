@@ -21,7 +21,10 @@ fn content_xml(bytes: &[u8]) -> Option<String> {
 }
 
 fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes().flatten().find(|a| a.key.as_ref() == key).map(|a| String::from_utf8_lossy(&a.value).into_owned())
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.as_ref() == key)
+        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }
 
 fn parse_hex_color(s: &str) -> Option<Color> {
@@ -68,17 +71,25 @@ fn parse_styles(xml: &str) -> HashMap<String, SpanStyle> {
                         if attr(&e, b"fo:font-style").as_deref() == Some("italic") {
                             cur.italic = true;
                         }
-                        if attr(&e, b"style:text-underline-style").map(|v| v != "none").unwrap_or(false) {
+                        if attr(&e, b"style:text-underline-style")
+                            .map(|v| v != "none")
+                            .unwrap_or(false)
+                        {
                             cur.underline = true;
                         }
-                        if attr(&e, b"style:text-line-through-style").map(|v| v != "none").unwrap_or(false) {
+                        if attr(&e, b"style:text-line-through-style")
+                            .map(|v| v != "none")
+                            .unwrap_or(false)
+                        {
                             cur.strike = true;
                         }
                         if let Some(c) = attr(&e, b"fo:color").and_then(|v| parse_hex_color(&v)) {
                             cur.color = Some(c);
                         }
                         if let Some(sz) = attr(&e, b"fo:font-size") {
-                            if let Some(pt) = sz.strip_suffix("pt").and_then(|s| s.parse::<f32>().ok()) {
+                            if let Some(pt) =
+                                sz.strip_suffix("pt").and_then(|s| s.parse::<f32>().ok())
+                            {
                                 cur.size = Some(pt * 96.0 / 72.0);
                             }
                         }
@@ -125,7 +136,16 @@ pub fn parse_text(bytes: &[u8]) -> Vec<Block> {
             return;
         }
         let s = st.copied().unwrap_or_default();
-        spans.push(Span { text: text.to_string(), bold: s.bold, italic: s.italic, underline: s.underline, strike: s.strike, color: s.color, size: s.size, ..Default::default() });
+        spans.push(Span {
+            text: text.to_string(),
+            bold: s.bold,
+            italic: s.italic,
+            underline: s.underline,
+            strike: s.strike,
+            color: s.color,
+            size: s.size,
+            ..Default::default()
+        });
     };
 
     loop {
@@ -144,7 +164,10 @@ pub fn parse_text(bytes: &[u8]) -> Vec<Block> {
                     }
                 }
                 b"h" if in_text => {
-                    let lvl = attr(&e, b"text:outline-level").and_then(|s| s.parse::<u8>().ok()).unwrap_or(1).clamp(1, 6);
+                    let lvl = attr(&e, b"text:outline-level")
+                        .and_then(|s| s.parse::<u8>().ok())
+                        .unwrap_or(1)
+                        .clamp(1, 6);
                     cur = Some(Kind::Heading(lvl));
                     spans.clear();
                 }
@@ -162,7 +185,9 @@ pub fn parse_text(bytes: &[u8]) -> Vec<Block> {
                     spans.clear();
                 }
                 b"span" if cur.is_some() => {
-                    let st = attr(&e, b"text:style-name").and_then(|n| styles.get(&n).copied()).unwrap_or_default();
+                    let st = attr(&e, b"text:style-name")
+                        .and_then(|n| styles.get(&n).copied())
+                        .unwrap_or_default();
                     style_stack.push(st);
                 }
                 _ => {}
@@ -171,14 +196,21 @@ pub fn parse_text(bytes: &[u8]) -> Vec<Block> {
                 b"tab" => push(&mut spans, style_stack.last(), "    "),
                 b"line-break" => push(&mut spans, style_stack.last(), " "),
                 b"s" => {
-                    let n = attr(&e, b"text:c").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).min(256);
+                    let n = attr(&e, b"text:c")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .min(256);
                     push(&mut spans, style_stack.last(), &" ".repeat(n));
                 }
                 _ => {}
             },
             Ok(Event::Text(t)) => {
                 if cur.is_some() {
-                    push(&mut spans, style_stack.last(), &t.unescape().unwrap_or_default());
+                    push(
+                        &mut spans,
+                        style_stack.last(),
+                        &t.unescape().unwrap_or_default(),
+                    );
                 }
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
@@ -196,7 +228,11 @@ pub fn parse_text(bytes: &[u8]) -> Vec<Block> {
                         if has {
                             blocks.push(match k {
                                 Kind::Heading(l) => Block::Heading(l, body),
-                                Kind::Item(level, marker) => Block::ListItem { level, marker, spans: body },
+                                Kind::Item(level, marker) => Block::ListItem {
+                                    level,
+                                    marker,
+                                    spans: body,
+                                },
                                 Kind::Para => Block::Para(body),
                             });
                         }
@@ -240,18 +276,28 @@ pub fn parse_spreadsheet(bytes: &[u8]) -> Vec<(String, Vec<Vec<String>>)> {
                     b"table" => {
                         in_table = true;
                         rows = Vec::new();
-                        name = attr(&e, b"table:name").unwrap_or_else(|| format!("Sheet{}", sheets.len() + 1));
+                        name = attr(&e, b"table:name")
+                            .unwrap_or_else(|| format!("Sheet{}", sheets.len() + 1));
                     }
                     b"table-row" if in_table => {
                         row = Vec::new();
-                        row_repeat = attr(&e, b"table:number-rows-repeated").and_then(|s| s.parse().ok()).unwrap_or(1).min(1000);
+                        row_repeat = attr(&e, b"table:number-rows-repeated")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1)
+                            .min(1000);
                     }
                     b"table-cell" | b"covered-table-cell" if in_table => {
                         in_cell = true;
                         cell.clear();
-                        cell_repeat = attr(&e, b"table:number-columns-repeated").and_then(|s| s.parse().ok()).unwrap_or(1).min(1024);
+                        cell_repeat = attr(&e, b"table:number-columns-repeated")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1)
+                            .min(1024);
                         // numeric/date/bool cells carry the value in an attribute
-                        cell_val = attr(&e, b"office:value").or_else(|| attr(&e, b"office:date-value")).or_else(|| attr(&e, b"office:string-value")).or_else(|| attr(&e, b"office:boolean-value"));
+                        cell_val = attr(&e, b"office:value")
+                            .or_else(|| attr(&e, b"office:date-value"))
+                            .or_else(|| attr(&e, b"office:string-value"))
+                            .or_else(|| attr(&e, b"office:boolean-value"));
                     }
                     _ => {}
                 }
@@ -264,9 +310,17 @@ pub fn parse_spreadsheet(bytes: &[u8]) -> Vec<(String, Vec<Vec<String>>)> {
             Ok(Event::End(e)) => match e.local_name().as_ref() {
                 b"table-cell" | b"covered-table-cell" if in_table => {
                     in_cell = false;
-                    let text = if cell.trim().is_empty() { cell_val.take().unwrap_or_default() } else { cell.clone() };
+                    let text = if cell.trim().is_empty() {
+                        cell_val.take().unwrap_or_default()
+                    } else {
+                        cell.clone()
+                    };
                     // a huge repeat of an EMPTY trailing cell shouldn't materialize 1024 cells
-                    let rep = if text.trim().is_empty() { 1 } else { cell_repeat.max(1) };
+                    let rep = if text.trim().is_empty() {
+                        1
+                    } else {
+                        cell_repeat.max(1)
+                    };
                     for _ in 0..rep {
                         row.push(text.clone());
                     }
@@ -283,7 +337,11 @@ pub fn parse_spreadsheet(bytes: &[u8]) -> Vec<(String, Vec<Vec<String>>)> {
                 }
                 b"table" if in_table => {
                     in_table = false;
-                    while rows.last().map(|r| r.iter().all(|s| s.trim().is_empty())).unwrap_or(false) {
+                    while rows
+                        .last()
+                        .map(|r| r.iter().all(|s| s.trim().is_empty()))
+                        .unwrap_or(false)
+                    {
                         rows.pop();
                     }
                     sheets.push((std::mem::take(&mut name), std::mem::take(&mut rows)));
@@ -299,7 +357,11 @@ pub fn parse_spreadsheet(bytes: &[u8]) -> Vec<(String, Vec<Vec<String>>)> {
 
 /// Back-compat: first sheet's rows only.
 pub fn parse_spreadsheet_rows(bytes: &[u8]) -> Vec<Vec<String>> {
-    parse_spreadsheet(bytes).into_iter().next().map(|(_, r)| r).unwrap_or_default()
+    parse_spreadsheet(bytes)
+        .into_iter()
+        .next()
+        .map(|(_, r)| r)
+        .unwrap_or_default()
 }
 
 /// ODP: each draw:page -> a heading + its text paragraphs; presentation notes skipped.

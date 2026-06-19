@@ -29,7 +29,10 @@ fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
     let mut dec = zune_png::PngDecoder::new(bytes);
     let result = dec.decode().ok()?;
     let (w, h) = dec.get_dimensions()?;
-    let channels = dec.get_colorspace().map(|c| c.num_components()).unwrap_or(0);
+    let channels = dec
+        .get_colorspace()
+        .map(|c| c.num_components())
+        .unwrap_or(0);
 
     let bytes8: Vec<u8> = match result {
         DecodingResult::U8(v) => v,
@@ -37,7 +40,11 @@ fn decode_png(bytes: &[u8]) -> Option<DecodedImage> {
         _ => return None,
     };
     let rgba = to_rgba(&bytes8, channels, w.checked_mul(h)?)?;
-    Some(DecodedImage { width: w as u32, height: h as u32, rgba })
+    Some(DecodedImage {
+        width: w as u32,
+        height: h as u32,
+        rgba,
+    })
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
@@ -52,7 +59,11 @@ fn decode_jpeg(bytes: &[u8]) -> Option<DecodedImage> {
     if px.len() < w.checked_mul(h)?.checked_mul(4)? {
         return None;
     }
-    Some(DecodedImage { width: w as u32, height: h as u32, rgba: px })
+    Some(DecodedImage {
+        width: w as u32,
+        height: h as u32,
+        rgba: px,
+    })
 }
 
 /// Expand `channels`-channel pixels to RGBA8.
@@ -77,8 +88,7 @@ fn to_rgba(src: &[u8], channels: usize, px_count: usize) -> Option<Vec<u8>> {
             }
         }
         1 => {
-            for i in 0..px_count {
-                let v = src[i];
+            for &v in src.iter().take(px_count) {
                 out.extend_from_slice(&[v, v, v, 255]);
             }
         }

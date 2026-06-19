@@ -23,5 +23,9 @@ fn main() {
 
     let pixmap = render_to_pixmap(&dl, &registry);
     pixmap.save_png("xlsx.png").expect("save xlsx.png");
-    println!("rendered xlsx -> xlsx.png ({}x{})", pixmap.width(), pixmap.height());
+    println!(
+        "rendered xlsx -> xlsx.png ({}x{})",
+        pixmap.width(),
+        pixmap.height()
+    );
 }

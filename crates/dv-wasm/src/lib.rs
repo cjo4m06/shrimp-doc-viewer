@@ -116,7 +116,11 @@ pub fn render_xlsx(
     registry.insert(FontId(0), FontData::new(font_bytes));
 
     let rgba = render(&dl, &registry);
-    RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    RenderedImage {
+        width: rgba.width,
+        height: rgba.height,
+        data: rgba.data,
+    }
 }
 
 /// Sheet names of an XLSX workbook, in order.
@@ -141,7 +145,13 @@ impl XlsxBook {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: Vec<u8>, font: Vec<u8>) -> XlsxBook {
         let names = dv_xlsx::sheet_names(&bytes);
-        XlsxBook { bytes, font, names, opts: dv_xlsx::Options::default(), cache: HashMap::new() }
+        XlsxBook {
+            bytes,
+            font,
+            names,
+            opts: dv_xlsx::Options::default(),
+            cache: HashMap::new(),
+        }
     }
 
     /// Build a single-sheet grid book from CSV / TSV / semicolon-delimited bytes,
@@ -152,7 +162,13 @@ impl XlsxBook {
         let sheet = dv_xlsx::Sheet::from_csv(&bytes, &opts);
         let mut cache = HashMap::new();
         cache.insert(0usize, sheet);
-        XlsxBook { bytes: Vec::new(), font, names: vec!["CSV".to_string()], opts, cache }
+        XlsxBook {
+            bytes: Vec::new(),
+            font,
+            names: vec!["CSV".to_string()],
+            opts,
+            cache,
+        }
     }
 
     /// Build a grid book from an ODS spreadsheet — every sheet becomes a tab.
@@ -162,14 +178,24 @@ impl XlsxBook {
         let mut cache = HashMap::new();
         let mut names = Vec::new();
         for (i, (name, rows)) in dv_odf::parse_spreadsheet(&bytes).into_iter().enumerate() {
-            names.push(if name.is_empty() { format!("Sheet{}", i + 1) } else { name });
+            names.push(if name.is_empty() {
+                format!("Sheet{}", i + 1)
+            } else {
+                name
+            });
             cache.insert(i, dv_xlsx::Sheet::from_rows(rows, &opts));
         }
         if names.is_empty() {
             names.push("Sheet1".to_string());
             cache.insert(0, dv_xlsx::Sheet::from_rows(Vec::new(), &opts));
         }
-        XlsxBook { bytes: Vec::new(), font, names, opts, cache }
+        XlsxBook {
+            bytes: Vec::new(),
+            font,
+            names,
+            opts,
+            cache,
+        }
     }
 
     #[wasm_bindgen(js_name = sheetNames)]
@@ -179,7 +205,9 @@ impl XlsxBook {
 
     fn sheet(&mut self, idx: usize) -> &dv_xlsx::Sheet {
         let (bytes, opts) = (&self.bytes, &self.opts);
-        self.cache.entry(idx).or_insert_with(|| dv_xlsx::Sheet::parse(bytes, idx, opts))
+        self.cache
+            .entry(idx)
+            .or_insert_with(|| dv_xlsx::Sheet::parse(bytes, idx, opts))
     }
 
     /// `[total_w, total_h, header_w, header_h]` in base (zoom=1) px.
@@ -192,14 +220,28 @@ impl XlsxBook {
     /// Render the viewport at data-px `(scroll_x, scroll_y)` into a
     /// `dev_w`×`dev_h` surface scaled by `scale` (= zoom × dpr).
     #[wasm_bindgen(js_name = renderViewport)]
-    pub fn render_viewport(&mut self, idx: usize, scroll_x: f32, scroll_y: f32, dev_w: f32, dev_h: f32, scale: f32) -> RenderedImage {
+    pub fn render_viewport(
+        &mut self,
+        idx: usize,
+        scroll_x: f32,
+        scroll_y: f32,
+        dev_w: f32,
+        dev_h: f32,
+        scale: f32,
+    ) -> RenderedImage {
         let font_bytes = self.font.clone();
         let font = FontData::new(font_bytes.clone());
-        let dl = self.sheet(idx).render_viewport(&font, scroll_x, scroll_y, dev_w, dev_h, scale);
+        let dl = self
+            .sheet(idx)
+            .render_viewport(&font, scroll_x, scroll_y, dev_w, dev_h, scale);
         let mut registry = FontRegistry::new();
         registry.insert(FontId(0), FontData::new(font_bytes));
         let rgba = render(&dl, &registry);
-        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+        RenderedImage {
+            width: rgba.width,
+            height: rgba.height,
+            data: rgba.data,
+        }
     }
 }
 
@@ -235,7 +277,11 @@ impl PptxDeck {
         for (i, fd) in fonts.data().iter().enumerate() {
             registry.insert(FontId(i as u32), fd.clone());
         }
-        PptxDeck { deck: dv_pptx::Deck::parse(&bytes), fonts, registry }
+        PptxDeck {
+            deck: dv_pptx::Deck::parse(&bytes),
+            fonts,
+            registry,
+        }
     }
 
     #[wasm_bindgen(js_name = slideCount)]
@@ -253,7 +299,11 @@ impl PptxDeck {
     pub fn render_slide(&self, idx: usize, scale: f32) -> RenderedImage {
         let dl = self.deck.render_slide(idx, &self.fonts, scale);
         let rgba = render(&dl, &self.registry);
-        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+        RenderedImage {
+            width: rgba.width,
+            height: rgba.height,
+            data: rgba.data,
+        }
     }
 }
 
@@ -267,7 +317,11 @@ pub fn render_docx(docx: Vec<u8>, font_bytes: Vec<u8>) -> RenderedImage {
     registry.insert(FontId(0), FontData::new(font_bytes));
 
     let rgba = render(&dl, &registry);
-    RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+    RenderedImage {
+        width: rgba.width,
+        height: rgba.height,
+        data: rgba.data,
+    }
 }
 
 /// A paginated DOCX kept alive for per-page virtualized, zoomable rendering.
@@ -320,7 +374,11 @@ impl DocxDoc {
     pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
         let dl = self.doc.render_page(idx, scale);
         let rgba = render(&dl, &self.registry);
-        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+        RenderedImage {
+            width: rgba.width,
+            height: rgba.height,
+            data: rgba.data,
+        }
     }
 }
 
@@ -363,11 +421,19 @@ fn build_flow(blocks: Vec<dv_flow::Block>, font: Vec<u8>, extra: js_sys::Array) 
 impl FlowDoc {
     #[wasm_bindgen(js_name = fromMarkdown)]
     pub fn from_markdown(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
-        build_flow(dv_md::parse_markdown(&String::from_utf8_lossy(&bytes)), font, extra)
+        build_flow(
+            dv_md::parse_markdown(&String::from_utf8_lossy(&bytes)),
+            font,
+            extra,
+        )
     }
     #[wasm_bindgen(js_name = fromText)]
     pub fn from_text(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
-        build_flow(dv_md::parse_text(&String::from_utf8_lossy(&bytes)), font, extra)
+        build_flow(
+            dv_md::parse_text(&String::from_utf8_lossy(&bytes)),
+            font,
+            extra,
+        )
     }
     #[wasm_bindgen(js_name = fromRtf)]
     pub fn from_rtf(bytes: Vec<u8>, font: Vec<u8>, extra: js_sys::Array) -> FlowDoc {
@@ -394,7 +460,11 @@ impl FlowDoc {
     #[wasm_bindgen(js_name = renderPage)]
     pub fn render_page(&self, idx: usize, scale: f32) -> RenderedImage {
         let rgba = render(&self.doc.render_page(idx, scale), &self.registry);
-        RenderedImage { width: rgba.width, height: rgba.height, data: rgba.data }
+        RenderedImage {
+            width: rgba.width,
+            height: rgba.height,
+            data: rgba.data,
+        }
     }
 }
 

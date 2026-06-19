@@ -11,8 +11,12 @@ use dv_text::FontData;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let docx_path = args.next().expect("usage: docx_demo <file.docx> <font> [page] [name=path ...]");
-    let font_path = args.next().expect("usage: docx_demo <file.docx> <font> [page] [name=path ...]");
+    let docx_path = args
+        .next()
+        .expect("usage: docx_demo <file.docx> <font> [page] [name=path ...]");
+    let font_path = args
+        .next()
+        .expect("usage: docx_demo <file.docx> <font> [page] [name=path ...]");
     let page: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let docx = std::fs::read(&docx_path).expect("read docx");
@@ -38,5 +42,12 @@ fn main() {
 
     let pixmap = render_to_pixmap(&dl, &registry);
     pixmap.save_png("docx.png").expect("save docx.png");
-    println!("rendered docx page {}/{} -> docx.png ({}x{}) [{} fonts]", page + 1, n, pixmap.width(), pixmap.height(), doc.fonts().data().len());
+    println!(
+        "rendered docx page {}/{} -> docx.png ({}x{}) [{} fonts]",
+        page + 1,
+        n,
+        pixmap.width(),
+        pixmap.height(),
+        doc.fonts().data().len()
+    );
 }

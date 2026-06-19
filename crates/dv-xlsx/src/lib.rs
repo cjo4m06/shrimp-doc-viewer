@@ -15,7 +15,10 @@ use std::io::Cursor;
 
 use calamine::{Data, Reader, Xlsx};
 
-use dv_ir::{Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PositionedGlyph, Transform};
+use dv_ir::{
+    Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PositionedGlyph,
+    Transform,
+};
 use dv_text::{shape, FontData};
 use model::{HAlign, Xf};
 
@@ -32,7 +35,14 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_rows: 100_000, max_cols: 1024, col_width: 64.0, row_height: 20.0, header_w: 44.0, font_size: 13.0 }
+        Self {
+            max_rows: 100_000,
+            max_cols: 1024,
+            col_width: 64.0,
+            row_height: 20.0,
+            header_w: 44.0,
+            font_size: 13.0,
+        }
     }
 }
 
@@ -96,7 +106,11 @@ fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
     }
     // Choose the delimiter from the first several non-comment lines, preferring the
     // candidate that yields the most consistent field count (not just the first line).
-    let sample: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')).take(10).collect();
+    let sample: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .take(10)
+        .collect();
     let score = |d: char| -> (usize, usize) {
         use std::collections::HashMap as M;
         let mut counts: M<usize, usize> = M::new();
@@ -170,7 +184,10 @@ fn parse_delimited(bytes: &[u8]) -> Vec<Vec<String>> {
 impl Sheet {
     /// Parse one sheet into an owned model.
     pub fn parse(bytes: &[u8], sheet_index: usize, opts: &Options) -> Sheet {
-        let name = sheet_names(bytes).into_iter().nth(sheet_index).unwrap_or_default();
+        let name = sheet_names(bytes)
+            .into_iter()
+            .nth(sheet_index)
+            .unwrap_or_default();
         let values = read_values(bytes, sheet_index);
         let parsed = model::parse(bytes, sheet_index, opts.col_width, opts.row_height);
         let geom = &parsed.geom;
@@ -240,7 +257,13 @@ impl Sheet {
     pub fn from_rows(rows: Vec<Vec<String>>, opts: &Options) -> Sheet {
         // `.min(.max(1))` (not clamp) so a caller-set max of 0 can't panic (lo>hi).
         let n_rows = rows.len().max(1).min(opts.max_rows.max(1)) as u32;
-        let n_cols = rows.iter().map(Vec::len).max().unwrap_or(1).max(1).min(opts.max_cols.max(1)) as u32;
+        let n_cols = rows
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1)
+            .max(1)
+            .min(opts.max_cols.max(1)) as u32;
 
         let mut values = HashMap::new();
         let mut col_chars = vec![0usize; n_cols as usize];
@@ -262,7 +285,9 @@ impl Sheet {
                     Some(n) => CellVal::Num(n),
                     // cap pathological cell length (a cell can't display 1M chars;
                     // shaping the full string every frame would hang) — char-safe slice.
-                    None if t.chars().count() > 2000 => CellVal::Text(t.chars().take(2000).collect()),
+                    None if t.chars().count() > 2000 => {
+                        CellVal::Text(t.chars().take(2000).collect())
+                    }
                     None => CellVal::Text(t.to_string()),
                 };
                 values.insert((r as u32, c as u32), v);
@@ -272,7 +297,8 @@ impl Sheet {
         let mut col_x = Vec::with_capacity(n_cols as usize + 1);
         col_x.push(0.0);
         for c in 0..n_cols as usize {
-            let w = (col_chars[c] as f32 * opts.font_size * 0.62 + 12.0).clamp(opts.col_width, 480.0);
+            let w =
+                (col_chars[c] as f32 * opts.font_size * 0.62 + 12.0).clamp(opts.col_width, 480.0);
             col_x.push(col_x[c] + w);
         }
         let mut row_y = Vec::with_capacity(n_rows as usize + 1);
@@ -312,13 +338,23 @@ impl Sheet {
     }
 
     fn xf_of(&self, r: u32, c: u32) -> Option<&Xf> {
-        self.cell_xf.get(&(r, c)).and_then(|i| self.xfs.get(*i as usize))
+        self.cell_xf
+            .get(&(r, c))
+            .and_then(|i| self.xfs.get(*i as usize))
     }
 
     /// Render the viewport at `(scroll_x, scroll_y)` (data px) into a
     /// `dev_w`×`dev_h` device-pixel surface, scaled by `scale` (= zoom × dpr).
     /// Column/row headers are frozen (painted last, over scrolled content).
-    pub fn render_viewport(&self, font: &FontData, scroll_x: f32, scroll_y: f32, dev_w: f32, dev_h: f32, scale: f32) -> DisplayList {
+    pub fn render_viewport(
+        &self,
+        font: &FontData,
+        scroll_x: f32,
+        scroll_y: f32,
+        dev_w: f32,
+        dev_h: f32,
+        scale: f32,
+    ) -> DisplayList {
         let mut dl = DisplayList::new(dev_w.max(1.0), dev_h.max(1.0));
         let hw = self.header_w * scale;
         let hh = self.header_h * scale;
@@ -347,7 +383,12 @@ impl Sheet {
                     continue;
                 }
                 if let Some(fill) = self.xf_of(r, c).and_then(|x| x.fill) {
-                    let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                    let (x0, x1, y0, y1) = (
+                        dx(self.col_x[c as usize]),
+                        dx(self.col_x[c as usize + 1]),
+                        dy(self.row_y[r as usize]),
+                        dy(self.row_y[r as usize + 1]),
+                    );
                     dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, fill));
                 }
             }
@@ -355,11 +396,23 @@ impl Sheet {
 
         // 3) Merges that intersect the viewport: fill (anchor colour/white) + border + text.
         for (&(ar, ac), &(er, ec)) in self.anchor_span.iter() {
-            if (ar as usize) >= r1 || (er as usize) < r0 || (ac as usize) >= c1 || (ec as usize) < c0 {
+            if (ar as usize) >= r1
+                || (er as usize) < r0
+                || (ac as usize) >= c1
+                || (ec as usize) < c0
+            {
                 continue;
             }
-            let (x0, x1, y0, y1) = (dx(self.col_x[ac as usize]), dx(self.col_x[ec as usize + 1]), dy(self.row_y[ar as usize]), dy(self.row_y[er as usize + 1]));
-            let fill = self.xf_of(ar, ac).and_then(|x| x.fill).unwrap_or(Color::WHITE);
+            let (x0, x1, y0, y1) = (
+                dx(self.col_x[ac as usize]),
+                dx(self.col_x[ec as usize + 1]),
+                dy(self.row_y[ar as usize]),
+                dy(self.row_y[er as usize + 1]),
+            );
+            let fill = self
+                .xf_of(ar, ac)
+                .and_then(|x| x.fill)
+                .unwrap_or(Color::WHITE);
             dl.push(fill_rect(x0, y0, x1 - x0, y1 - y0, fill));
             dl.push(rect_stroke(x0, y0, x1 - x0, y1 - y0, MERGE_BORDER));
             if let Some(v) = self.values.get(&(ar, ac)) {
@@ -376,7 +429,12 @@ impl Sheet {
                 }
                 if let Some(b) = self.xf_of(r, c).map(|x| x.border) {
                     if b.left || b.right || b.top || b.bottom {
-                        let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                        let (x0, x1, y0, y1) = (
+                            dx(self.col_x[c as usize]),
+                            dx(self.col_x[c as usize + 1]),
+                            dy(self.row_y[r as usize]),
+                            dy(self.row_y[r as usize + 1]),
+                        );
                         if b.top {
                             dl.push(seg(x0, y0, x1, y0, BORDER));
                         }
@@ -402,7 +460,12 @@ impl Sheet {
                     continue;
                 }
                 if let Some(v) = self.values.get(&(r, c)) {
-                    let (x0, x1, y0, y1) = (dx(self.col_x[c as usize]), dx(self.col_x[c as usize + 1]), dy(self.row_y[r as usize]), dy(self.row_y[r as usize + 1]));
+                    let (x0, x1, y0, y1) = (
+                        dx(self.col_x[c as usize]),
+                        dx(self.col_x[c as usize + 1]),
+                        dy(self.row_y[r as usize]),
+                        dy(self.row_y[r as usize + 1]),
+                    );
                     self.push_cell_text(&mut dl, font, v, r, c, x0, x1, y0, y1, scale);
                 }
             }
@@ -419,28 +482,79 @@ impl Sheet {
         for c in c0..c1 {
             let (x0, x1) = (dx(self.col_x[c]), dx(self.col_x[c + 1]));
             dl.push(vline(x1, 0.0, hh, GRID));
-            push_text(&mut dl, font, &col_letter(c), hsize, x0, x1, 0.0, hh, Align::Center, HEADER_TEXT, false);
+            push_text(
+                &mut dl,
+                font,
+                &col_letter(c),
+                hsize,
+                x0,
+                x1,
+                0.0,
+                hh,
+                Align::Center,
+                HEADER_TEXT,
+                false,
+            );
         }
         for r in r0..r1 {
             let (y0, y1) = (dy(self.row_y[r]), dy(self.row_y[r + 1]));
             dl.push(hline(0.0, hw, y1, GRID));
-            push_text(&mut dl, font, &(r + 1).to_string(), hsize, 0.0, hw, y0, y1 - y0, Align::Center, HEADER_TEXT, false);
+            push_text(
+                &mut dl,
+                font,
+                &(r + 1).to_string(),
+                hsize,
+                0.0,
+                hw,
+                y0,
+                y1 - y0,
+                Align::Center,
+                HEADER_TEXT,
+                false,
+            );
         }
 
         dl
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_cell_text(&self, dl: &mut DisplayList, font: &FontData, v: &CellVal, r: u32, c: u32, x0: f32, x1: f32, y0: f32, y1: f32, scale: f32) {
+    fn push_cell_text(
+        &self,
+        dl: &mut DisplayList,
+        font: &FontData,
+        v: &CellVal,
+        r: u32,
+        c: u32,
+        x0: f32,
+        x1: f32,
+        y0: f32,
+        y1: f32,
+        scale: f32,
+    ) {
         let xf = self.xf_of(r, c);
         let text = display_text(v, xf);
         if text.is_empty() {
             return;
         }
-        let align = xf.and_then(|x| x.h_align).map(map_align).unwrap_or_else(|| default_align(v));
+        let align = xf
+            .and_then(|x| x.h_align)
+            .map(map_align)
+            .unwrap_or_else(|| default_align(v));
         let color = xf.and_then(|x| x.font.color).unwrap_or(CELL_TEXT);
         let bold = xf.map(|x| x.font.bold).unwrap_or(false);
-        push_text(dl, font, &text, self.font_size * scale, x0, x1, y0, y1 - y0, align, color, bold);
+        push_text(
+            dl,
+            font,
+            &text,
+            self.font_size * scale,
+            x0,
+            x1,
+            y0,
+            y1 - y0,
+            align,
+            color,
+            bold,
+        );
     }
 }
 
@@ -450,14 +564,22 @@ fn visible_range(prefix: &[f32], start: f32, span: f32, n: usize) -> (usize, usi
         return (0, 0);
     }
     let end = start + span;
-    let i0 = prefix.partition_point(|&x| x <= start).saturating_sub(1).min(n - 1);
+    let i0 = prefix
+        .partition_point(|&x| x <= start)
+        .saturating_sub(1)
+        .min(n - 1);
     let i1 = prefix.partition_point(|&x| x < end).min(n);
     (i0, i1.max(i0 + 1))
 }
 
 /// Convenience: render an entire sheet (no scrolling) at 1×. Used by the native
 /// demo and the non-virtualized `render_xlsx` path.
-pub fn render_sheet(bytes: &[u8], sheet_index: usize, font: &FontData, opts: &Options) -> DisplayList {
+pub fn render_sheet(
+    bytes: &[u8],
+    sheet_index: usize,
+    font: &FontData,
+    opts: &Options,
+) -> DisplayList {
     let sheet = Sheet::parse(bytes, sheet_index, opts);
     let dev_w = (sheet.header_w + sheet.total_w()).ceil();
     let dev_h = (sheet.header_h + sheet.total_h()).ceil();
@@ -570,7 +692,11 @@ fn format_fixed(val: f64, decimals: usize, thousands: bool) -> String {
         Some((i, f)) => (i.to_string(), Some(f.to_string())),
         None => (s, None),
     };
-    let int_part = if thousands { group_thousands(&int_part) } else { int_part };
+    let int_part = if thousands {
+        group_thousands(&int_part)
+    } else {
+        int_part
+    };
     let mut out = String::new();
     if neg {
         out.push('-');
@@ -587,7 +713,7 @@ fn group_thousands(s: &str) -> String {
     let len = s.chars().count();
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -615,9 +741,21 @@ fn format_date(v: f64, pattern: &str) -> String {
                 i += 1;
             }
             match lc {
-                'y' => out.push_str(&if n >= 4 { format!("{:04}", y) } else { format!("{:02}", y.rem_euclid(100)) }),
-                'm' => out.push_str(&if n >= 2 { format!("{:02}", m) } else { format!("{}", m) }),
-                _ => out.push_str(&if n >= 2 { format!("{:02}", d) } else { format!("{}", d) }),
+                'y' => out.push_str(&if n >= 4 {
+                    format!("{:04}", y)
+                } else {
+                    format!("{:02}", y.rem_euclid(100))
+                }),
+                'm' => out.push_str(&if n >= 2 {
+                    format!("{:02}", m)
+                } else {
+                    format!("{}", m)
+                }),
+                _ => out.push_str(&if n >= 2 {
+                    format!("{:02}", d)
+                } else {
+                    format!("{}", d)
+                }),
             }
         } else if ch == '"' {
             i += 1;
@@ -680,7 +818,12 @@ fn fill_rect(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x + w, y + h);
     p.line_to(x, y + h);
     p.close();
-    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: FillRule::NonZero, transform: Transform::IDENTITY }
+    Command::FillPath {
+        path: p,
+        paint: Paint::Solid(color),
+        fill_rule: FillRule::NonZero,
+        transform: Transform::IDENTITY,
+    }
 }
 
 fn rect_stroke(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
@@ -690,14 +833,24 @@ fn rect_stroke(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x + w, y + h);
     p.line_to(x, y + h);
     p.close();
-    Command::StrokePath { path: p, paint: Paint::Solid(color), width: 1.0, transform: Transform::IDENTITY }
+    Command::StrokePath {
+        path: p,
+        paint: Paint::Solid(color),
+        width: 1.0,
+        transform: Transform::IDENTITY,
+    }
 }
 
 fn seg(x0: f32, y0: f32, x1: f32, y1: f32, color: Color) -> Command {
     let mut p = PathData::new();
     p.move_to(x0, y0);
     p.line_to(x1, y1);
-    Command::StrokePath { path: p, paint: Paint::Solid(color), width: 1.0, transform: Transform::IDENTITY }
+    Command::StrokePath {
+        path: p,
+        paint: Paint::Solid(color),
+        width: 1.0,
+        transform: Transform::IDENTITY,
+    }
 }
 
 fn vline(x: f32, y0: f32, y1: f32, color: Color) -> Command {
@@ -743,10 +896,20 @@ fn push_text(
         if !glyphs.is_empty() && x + adv > max_x + 0.5 {
             break;
         }
-        glyphs.push(PositionedGlyph { id: g.glyph_id, x: x + g.x_offset * scale, y: baseline - g.y_offset * scale });
+        glyphs.push(PositionedGlyph {
+            id: g.glyph_id,
+            x: x + g.x_offset * scale,
+            y: baseline - g.y_offset * scale,
+        });
         x += adv;
     }
     if !glyphs.is_empty() {
-        dl.push(Command::Glyphs(GlyphRun { font: FontId(0), size, paint: Paint::Solid(color), bold, glyphs }));
+        dl.push(Command::Glyphs(GlyphRun {
+            font: FontId(0),
+            size,
+            paint: Paint::Solid(color),
+            bold,
+            glyphs,
+        }));
     }
 }

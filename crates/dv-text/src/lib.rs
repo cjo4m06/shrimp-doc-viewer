@@ -26,7 +26,10 @@ impl FontData {
         let units_per_em = rustybuzz::Face::from_slice(&bytes, 0)
             .map(|f| f.units_per_em() as f32)
             .unwrap_or(1000.0);
-        Self { bytes, units_per_em }
+        Self {
+            bytes,
+            units_per_em,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -108,21 +111,41 @@ impl Fonts {
             let idx = list.len();
             list.push(fd);
             let low = name.to_lowercase();
-            if low.contains("symbol") || low.contains("wingding") || low.contains("dingbat") || low.contains("webding") {
+            if low.contains("symbol")
+                || low.contains("wingding")
+                || low.contains("dingbat")
+                || low.contains("webding")
+            {
                 symbol = idx;
             }
             by_name.entry(low).or_insert(idx);
         }
         let cover = list.iter().map(|f| f.coverage()).collect();
-        Fonts { list, cover, by_name, cjk: 0, latin: 0, symbol }
+        Fonts {
+            list,
+            cover,
+            by_name,
+            cjk: 0,
+            latin: 0,
+            symbol,
+        }
     }
     pub fn covers(&self, i: usize, ch: char) -> bool {
-        ch.is_whitespace() || self.cover.get(i).map(|s| s.contains(&(ch as u32))).unwrap_or(false)
+        ch.is_whitespace()
+            || self
+                .cover
+                .get(i)
+                .map(|s| s.contains(&(ch as u32)))
+                .unwrap_or(false)
     }
     /// Pick the font index for one character: the run's declared face if it has the
     /// glyph, else the script default, else any loaded font that covers it.
     pub fn idx_for(&self, ascii: Option<&str>, ea: Option<&str>, ch: char) -> usize {
-        let declared = if is_cjk(ch) { ea.or(ascii) } else { ascii.or(ea) };
+        let declared = if is_cjk(ch) {
+            ea.or(ascii)
+        } else {
+            ascii.or(ea)
+        };
         if let Some(name) = declared {
             if let Some(&i) = self.by_name.get(&name.to_lowercase()) {
                 if self.covers(i, ch) {
@@ -140,7 +163,9 @@ impl Fonts {
         if self.covers(fb, ch) {
             return fb;
         }
-        (0..self.list.len()).find(|&i| self.covers(i, ch)).unwrap_or(fb)
+        (0..self.list.len())
+            .find(|&i| self.covers(i, ch))
+            .unwrap_or(fb)
     }
     pub fn get(&self, i: usize) -> &FontData {
         &self.list[i.min(self.list.len().saturating_sub(1))]
@@ -179,7 +204,10 @@ pub fn shape(font: &FontData, text: &str, _size: f32) -> ShapedRun {
     let face = match rustybuzz::Face::from_slice(&font.bytes, 0) {
         Some(f) => f,
         None => {
-            return ShapedRun { glyphs: Vec::new(), units_per_em: font.units_per_em };
+            return ShapedRun {
+                glyphs: Vec::new(),
+                units_per_em: font.units_per_em,
+            };
         }
     };
 
@@ -203,7 +231,10 @@ pub fn shape(font: &FontData, text: &str, _size: f32) -> ShapedRun {
         });
     }
 
-    ShapedRun { glyphs, units_per_em: face.units_per_em() as f32 }
+    ShapedRun {
+        glyphs,
+        units_per_em: face.units_per_em() as f32,
+    }
 }
 
 /// A font opened **once** for repeated glyph-outline extraction. Building the
@@ -217,7 +248,9 @@ pub struct GlyphSource<'a> {
 impl FontData {
     /// Open the font once for outlining (returns `None` if the bytes don't parse).
     pub fn glyph_source(&self) -> Option<GlyphSource<'_>> {
-        skrifa::FontRef::from_index(&self.bytes, 0).ok().map(|font| GlyphSource { font })
+        skrifa::FontRef::from_index(&self.bytes, 0)
+            .ok()
+            .map(|font| GlyphSource { font })
     }
 }
 
@@ -265,5 +298,7 @@ impl GlyphSource<'_> {
 /// Convenience: outline a single glyph (rebuilds the font each call — prefer
 /// [`FontData::glyph_source`] + [`GlyphSource::outline`] in a render loop).
 pub fn outline_glyph(font: &FontData, glyph_id: u32) -> PathData {
-    font.glyph_source().map(|s| s.outline(glyph_id)).unwrap_or_else(PathData::new)
+    font.glyph_source()
+        .map(|s| s.outline(glyph_id))
+        .unwrap_or_default()
 }

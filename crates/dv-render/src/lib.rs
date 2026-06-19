@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use dv_ir::{Command, DisplayList, FillRule, FontId, Paint, PathData, PathVerb, Transform};
 use dv_text::FontData;
 use tiny_skia::{
-    Color as SkColor, ColorU8, FilterQuality, FillRule as SkFillRule, LineCap, LineJoin, Mask,
+    Color as SkColor, ColorU8, FillRule as SkFillRule, FilterQuality, LineCap, LineJoin, Mask,
     Paint as SkPaint, PathBuilder, Pixmap, PixmapPaint, Stroke, Transform as SkTransform,
 };
 
@@ -80,31 +80,58 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
 
     for command in &dl.commands {
         match command {
-            Command::FillPath { path, paint, fill_rule, transform } => {
+            Command::FillPath {
+                path,
+                paint,
+                fill_rule,
+                transform,
+            } => {
                 if let Some(p) = build_path(path) {
-                    let mut sp = SkPaint::default();
-                    sp.anti_alias = true;
+                    let mut sp = SkPaint {
+                        anti_alias: true,
+                        ..Default::default()
+                    };
                     let Paint::Solid(c) = *paint;
                     sp.set_color(sk_color(c));
-                    pixmap.fill_path(&p, &sp, sk_fill_rule(*fill_rule), sk_transform(*transform), None);
+                    pixmap.fill_path(
+                        &p,
+                        &sp,
+                        sk_fill_rule(*fill_rule),
+                        sk_transform(*transform),
+                        None,
+                    );
                 }
             }
-            Command::StrokePath { path, paint, width, transform } => {
+            Command::StrokePath {
+                path,
+                paint,
+                width,
+                transform,
+            } => {
                 if let Some(p) = build_path(path) {
-                    let mut sp = SkPaint::default();
-                    sp.anti_alias = true;
+                    let mut sp = SkPaint {
+                        anti_alias: true,
+                        ..Default::default()
+                    };
                     let Paint::Solid(c) = *paint;
                     sp.set_color(sk_color(c));
-                    let stroke = Stroke { width: *width, ..Stroke::default() };
+                    let stroke = Stroke {
+                        width: *width,
+                        ..Stroke::default()
+                    };
                     pixmap.stroke_path(&p, &sp, &stroke, sk_transform(*transform), None);
                 }
             }
             Command::Glyphs(run) => {
-                let Some(font) = fonts.get(run.font) else { continue };
+                let Some(font) = fonts.get(run.font) else {
+                    continue;
+                };
                 let upem = font.units_per_em().max(1.0);
                 let scale = run.size / upem;
-                let mut sp = SkPaint::default();
-                sp.anti_alias = true;
+                let mut sp = SkPaint {
+                    anti_alias: true,
+                    ..Default::default()
+                };
                 let Paint::Solid(c) = run.paint;
                 sp.set_color(sk_color(c));
 
@@ -123,10 +150,12 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                     None
                 };
 
-                let src = sources.entry(run.font.0).or_insert_with(|| font.glyph_source());
+                let src = sources
+                    .entry(run.font.0)
+                    .or_insert_with(|| font.glyph_source());
                 for g in &run.glyphs {
                     let entry = glyph_cache.entry((run.font.0, g.id)).or_insert_with(|| {
-                        let outline = src.as_ref().map(|s| s.outline(g.id)).unwrap_or_else(PathData::new);
+                        let outline = src.as_ref().map(|s| s.outline(g.id)).unwrap_or_default();
                         build_path(&outline)
                     });
                     let Some(p) = entry else { continue };
@@ -139,21 +168,37 @@ pub fn render_to_pixmap(dl: &DisplayList, fonts: &FontRegistry) -> Pixmap {
                     }
                 }
             }
-            Command::Image { rgba, src_w, src_h, x, y, w, h, clip } => {
+            Command::Image {
+                rgba,
+                src_w,
+                src_h,
+                x,
+                y,
+                w,
+                h,
+                clip,
+            } => {
                 if *src_w == 0 || *src_h == 0 || rgba.len() < (src_w * src_h * 4) as usize {
                     continue;
                 }
-                let Some(mut src) = Pixmap::new(*src_w, *src_h) else { continue };
+                let Some(mut src) = Pixmap::new(*src_w, *src_h) else {
+                    continue;
+                };
                 {
                     // tiny-skia stores premultiplied RGBA; convert from straight.
                     let dst = src.pixels_mut();
                     for (i, px) in dst.iter_mut().enumerate() {
                         let o = i * 4;
-                        *px = ColorU8::from_rgba(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3]).premultiply();
+                        *px = ColorU8::from_rgba(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])
+                            .premultiply();
                     }
                 }
-                let t = SkTransform::from_row(*w / *src_w as f32, 0.0, 0.0, *h / *src_h as f32, *x, *y);
-                let paint = PixmapPaint { quality: FilterQuality::Bilinear, ..PixmapPaint::default() };
+                let t =
+                    SkTransform::from_row(*w / *src_w as f32, 0.0, 0.0, *h / *src_h as f32, *x, *y);
+                let paint = PixmapPaint {
+                    quality: FilterQuality::Bilinear,
+                    ..PixmapPaint::default()
+                };
                 // Optional clip (device-space path -> coverage mask), e.g. ellipse crop.
                 let mask = clip.as_ref().and_then(build_path).and_then(|p| {
                     let mut m = Mask::new(pixmap.width(), pixmap.height())?;
@@ -189,5 +234,9 @@ pub fn render(dl: &DisplayList, fonts: &FontRegistry) -> Rgba {
         data.push(c.blue());
         data.push(c.alpha());
     }
-    Rgba { width, height, data }
+    Rgba {
+        width,
+        height,
+        data,
+    }
 }

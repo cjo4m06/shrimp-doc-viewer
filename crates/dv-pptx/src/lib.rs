@@ -6,15 +6,18 @@
 //! lays each text box out (with CJK+Latin wrapping) into the shared
 //! [`dv_ir::DisplayList`].
 //!
-//! Scope (M5.1): positioned text boxes + solid-fill rectangles + run formatting
-//! + paragraph alignment. Not yet: preset shape geometry, images, theme/master
-//! inheritance, tables, charts, gradients — these are the long tail of PPTX
-//! fidelity for any non-Microsoft renderer.
+//! Scope (M5.1): positioned text boxes, solid-fill rectangles, run formatting and
+//! paragraph alignment. Not yet: preset shape geometry, images, theme/master
+//! inheritance, tables, charts, gradients — the long tail of PPTX fidelity for any
+//! non-Microsoft renderer.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
-use dv_ir::{Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PathVerb, PositionedGlyph, Transform};
+use dv_ir::{
+    Color, Command, DisplayList, FillRule, FontId, GlyphRun, Paint, PathData, PathVerb,
+    PositionedGlyph, Transform,
+};
 use dv_text::{is_cjk, shape, Fonts};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -38,7 +41,7 @@ struct Run {
     underline: bool,
     color: Color,
     highlight: Option<Color>,
-    font_latin: Option<String>,    // a:latin/a:cs typeface
+    font_latin: Option<String>,     // a:latin/a:cs typeface
     font_east_asia: Option<String>, // a:ea typeface
 }
 
@@ -84,7 +87,14 @@ struct Body {
 impl Default for Body {
     fn default() -> Self {
         // OOXML defaults: l/r = 0.1in (91440 EMU), t/b = 0.05in (45720 EMU)
-        Body { anchor: 0, ins_l: 9.6, ins_t: 4.8, ins_r: 9.6, ins_b: 4.8, font_scale: 1.0 }
+        Body {
+            anchor: 0,
+            ins_l: 9.6,
+            ins_t: 4.8,
+            ins_r: 9.6,
+            ins_b: 4.8,
+            font_scale: 1.0,
+        }
     }
 }
 
@@ -235,7 +245,11 @@ fn resolve_rel(base_dir: &str, target: &str) -> String {
     if let Some(s) = target.strip_prefix('/') {
         return s.to_string();
     }
-    let mut parts: Vec<&str> = base_dir.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let mut parts: Vec<&str> = base_dir
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     for seg in target.split('/') {
         match seg {
             ".." => {
@@ -275,7 +289,11 @@ impl Theme {
         if val == "phClr" {
             return Color::rgb(0x40, 0x40, 0x40);
         }
-        let slot = self.clrmap.get(val).cloned().unwrap_or_else(|| val.to_string());
+        let slot = self
+            .clrmap
+            .get(val)
+            .cloned()
+            .unwrap_or_else(|| val.to_string());
         self.colors.get(&slot).copied().unwrap_or(Color::BLACK)
     }
 }
@@ -286,8 +304,10 @@ fn parse_theme(xml: &str) -> HashMap<String, Color> {
     let mut out = HashMap::new();
     let mut in_scheme = false;
     let mut slot: Option<String> = None;
-    const SLOTS: [&str; 12] =
-        ["dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"];
+    const SLOTS: [&str; 12] = [
+        "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3", "accent4", "accent5",
+        "accent6", "hlink", "folHlink",
+    ];
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
@@ -312,7 +332,12 @@ fn parse_theme(xml: &str) -> HashMap<String, Color> {
                 }
             }
             Ok(Event::End(e)) => {
-                if e.name().as_ref().strip_prefix(b"a:").unwrap_or(e.name().as_ref()) == b"clrScheme" {
+                if e.name()
+                    .as_ref()
+                    .strip_prefix(b"a:")
+                    .unwrap_or(e.name().as_ref())
+                    == b"clrScheme"
+                {
                     break;
                 }
             }
@@ -332,7 +357,10 @@ fn parse_clrmap(xml: &str) -> HashMap<String, String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().as_ref() == b"p:clrMap" => {
                 for a in e.attributes().flatten() {
-                    if let (Ok(k), Ok(v)) = (std::str::from_utf8(a.key.as_ref()), std::str::from_utf8(a.value.as_ref())) {
+                    if let (Ok(k), Ok(v)) = (
+                        std::str::from_utf8(a.key.as_ref()),
+                        std::str::from_utf8(a.value.as_ref()),
+                    ) {
                         map.insert(k.to_string(), v.to_string());
                     }
                 }
@@ -355,7 +383,11 @@ fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
         return (0.0, 0.0, l);
     }
     let d = max - min;
-    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
     let h = if max == r {
         ((g - b) / d + if g < b { 6.0 } else { 0.0 }) / 6.0
     } else if max == g {
@@ -387,11 +419,23 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
     let (r, g, b) = if s.abs() < 1e-6 {
         (l, l, l)
     } else {
-        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
         let p = 2.0 * l - q;
-        (hue(p, q, h + 1.0 / 3.0), hue(p, q, h), hue(p, q, h - 1.0 / 3.0))
+        (
+            hue(p, q, h + 1.0 / 3.0),
+            hue(p, q, h),
+            hue(p, q, h - 1.0 / 3.0),
+        )
     };
-    Color::rgb((r * 255.0).round() as u8, (g * 255.0).round() as u8, (b * 255.0).round() as u8)
+    Color::rgb(
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
 }
 
 /// Apply a DrawingML colour modifier (`a:lumMod`/`lumOff`/`shade`/`tint`, val/100000).
@@ -475,12 +519,20 @@ fn merge_into(base: &mut PhStyle, over: PhStyle) {
 }
 
 /// Build the layout's per-placeholder style maps (by idx, by type).
-fn layout_ph_styles(xml: &str, theme: &Theme) -> (HashMap<String, PhStyle>, HashMap<String, PhStyle>) {
+fn layout_ph_styles(
+    xml: &str,
+    theme: &Theme,
+) -> (HashMap<String, PhStyle>, HashMap<String, PhStyle>) {
     let mut by_idx = HashMap::new();
     let mut by_type = HashMap::new();
     for block in xml.split("<p:sp>").skip(1) {
-        let Some(phi) = block.find("<p:ph") else { continue };
-        let end = block[phi..].find('>').map(|k| phi + k + 1).unwrap_or(block.len());
+        let Some(phi) = block.find("<p:ph") else {
+            continue;
+        };
+        let end = block[phi..]
+            .find('>')
+            .map(|k| phi + k + 1)
+            .unwrap_or(block.len());
         let ph = &block[phi..end];
         let attr = |name: &str| {
             let pat = format!("{name}=\"");
@@ -492,7 +544,10 @@ fn layout_ph_styles(xml: &str, theme: &Theme) -> (HashMap<String, PhStyle>, Hash
         let style = extract_style(block, theme);
         if let Some(ty) = attr("type") {
             // accumulate so a size-less placeholder doesn't mask a sized sibling
-            by_type.entry(ty).and_modify(|e| merge_into(e, style)).or_insert(style);
+            by_type
+                .entry(ty)
+                .and_modify(|e| merge_into(e, style))
+                .or_insert(style);
         }
         if let Some(idx) = attr("idx") {
             by_idx.entry(idx).or_insert(style);
@@ -521,7 +576,10 @@ fn extract_style(frag: &str, theme: &Theme) -> PhStyle {
                     if let Some(b) = get_attr(&e, b"b") {
                         st.bold = Some(b == "1");
                     }
-                } else if in_def && st.color.is_none() && (nm == b"a:srgbClr" || nm == b"a:schemeClr") {
+                } else if in_def
+                    && st.color.is_none()
+                    && (nm == b"a:srgbClr" || nm == b"a:schemeClr")
+                {
                     st.color = if nm == b"a:schemeClr" {
                         get_attr(&e, b"val").map(|v| theme.scheme(&v))
                     } else {
@@ -549,10 +607,13 @@ fn slice_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
     Some(&s[i..j + close.len()])
 }
 
-
 impl Deck {
     pub fn parse(bytes: &[u8]) -> Deck {
-        let mut deck = Deck { slides: Vec::new(), width: 960.0, height: 720.0 };
+        let mut deck = Deck {
+            slides: Vec::new(),
+            width: 960.0,
+            height: 720.0,
+        };
         let mut zip = match ZipArchive::new(Cursor::new(bytes.to_vec())) {
             Ok(z) => z,
             Err(_) => return deck,
@@ -564,14 +625,21 @@ impl Deck {
         let (w, h, rids) = parse_presentation(&pres);
         deck.width = w;
         deck.height = h;
-        let pres_rels = read_entry(&mut zip, "ppt/_rels/presentation.xml.rels").map(|s| rels_map(&s)).unwrap_or_default();
+        let pres_rels = read_entry(&mut zip, "ppt/_rels/presentation.xml.rels")
+            .map(|s| rels_map(&s))
+            .unwrap_or_default();
 
         for rid in rids {
-            let Some(target) = pres_rels.get(&rid).cloned() else { continue };
+            let Some(target) = pres_rels.get(&rid).cloned() else {
+                continue;
+            };
             let slide_path = resolve_rel("ppt", &target);
-            let Some(slide_xml) = read_entry(&mut zip, &slide_path) else { continue };
+            let Some(slide_xml) = read_entry(&mut zip, &slide_path) else {
+                continue;
+            };
             let (sdir, sfile) = split_path(&slide_path);
-            let slide_rels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", sdir, sfile)).unwrap_or_default();
+            let slide_rels_xml =
+                read_entry(&mut zip, &format!("{}/_rels/{}.rels", sdir, sfile)).unwrap_or_default();
             let slide_rels = rels_map(&slide_rels_xml);
 
             // Resolve the slide -> layout -> master -> theme chain.
@@ -586,19 +654,23 @@ impl Deck {
                 let (ld, lf) = split_path(&lp);
                 layout_dir = ld.clone();
                 layout_xml = read_entry(&mut zip, &lp).unwrap_or_default();
-                let lrels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", ld, lf)).unwrap_or_default();
+                let lrels_xml =
+                    read_entry(&mut zip, &format!("{}/_rels/{}.rels", ld, lf)).unwrap_or_default();
                 layout_rels = rels_map(&lrels_xml);
                 if let Some(mt) = rel_target(&lrels_xml, "slideMaster") {
                     let mp = resolve_rel(&ld, &mt);
                     let (md, mf) = split_path(&mp);
                     master_dir = md.clone();
                     master_xml = read_entry(&mut zip, &mp).unwrap_or_default();
-                    let mrels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", md, mf)).unwrap_or_default();
+                    let mrels_xml = read_entry(&mut zip, &format!("{}/_rels/{}.rels", md, mf))
+                        .unwrap_or_default();
                     master_rels = rels_map(&mrels_xml);
                     theme.clrmap = parse_clrmap(&master_xml);
                     if let Some(tt) = rel_target(&mrels_xml, "theme") {
                         let tp = resolve_rel(&md, &tt);
-                        theme.colors = read_entry(&mut zip, &tp).map(|x| parse_theme(&x)).unwrap_or_default();
+                        theme.colors = read_entry(&mut zip, &tp)
+                            .map(|x| parse_theme(&x))
+                            .unwrap_or_default();
                     }
                 }
             }
@@ -632,23 +704,51 @@ impl Deck {
             let mut bg = None;
             let mut bg_image = None;
             if !master_xml.is_empty() {
-                let (ms, mbg, mbi) = parse_part_shapes(&master_xml, &master_rels, &master_dir, &mut zip, &theme, &def, true);
+                let (ms, mbg, mbi) = parse_part_shapes(
+                    &master_xml,
+                    &master_rels,
+                    &master_dir,
+                    &mut zip,
+                    &theme,
+                    &def,
+                    true,
+                );
                 shapes.extend(ms);
                 bg = mbg;
                 bg_image = mbi;
             }
             if !layout_xml.is_empty() {
-                let (ls, lbg, lbi) = parse_part_shapes(&layout_xml, &layout_rels, &layout_dir, &mut zip, &theme, &def, true);
+                let (ls, lbg, lbi) = parse_part_shapes(
+                    &layout_xml,
+                    &layout_rels,
+                    &layout_dir,
+                    &mut zip,
+                    &theme,
+                    &def,
+                    true,
+                );
                 shapes.extend(ls);
                 bg = lbg.or(bg);
                 bg_image = lbi.or(bg_image);
             }
-            let (ss, sbg, sbi) = parse_part_shapes(&slide_xml, &slide_rels, &sdir, &mut zip, &theme, &styles, false);
+            let (ss, sbg, sbi) = parse_part_shapes(
+                &slide_xml,
+                &slide_rels,
+                &sdir,
+                &mut zip,
+                &theme,
+                &styles,
+                false,
+            );
             shapes.extend(ss);
             let bg = sbg.or(bg);
             let bg_image = sbi.or(bg_image);
 
-            deck.slides.push(SlideData { shapes, bg, bg_image });
+            deck.slides.push(SlideData {
+                shapes,
+                bg,
+                bg_image,
+            });
         }
         deck
     }
@@ -665,13 +765,24 @@ impl Deck {
 
     /// Render slide `idx` at `scale` (= zoom × dpr) into a device-px display list.
     pub fn render_slide(&self, idx: usize, fonts: &Fonts, scale: f32) -> DisplayList {
-        let mut dl = DisplayList::new((self.width * scale).max(1.0), (self.height * scale).max(1.0));
-        let Some(sd) = self.slides.get(idx) else { return dl };
+        let mut dl = DisplayList::new(
+            (self.width * scale).max(1.0),
+            (self.height * scale).max(1.0),
+        );
+        let Some(sd) = self.slides.get(idx) else {
+            return dl;
+        };
         let shapes = &sd.shapes;
 
         // Slide background: resolved colour, then a full-slide background image.
         if let Some(bg) = sd.bg {
-            dl.push(fill_rect(0.0, 0.0, self.width * scale, self.height * scale, bg));
+            dl.push(fill_rect(
+                0.0,
+                0.0,
+                self.width * scale,
+                self.height * scale,
+                bg,
+            ));
         }
         if let Some(img) = &sd.bg_image {
             dl.push(Command::Image {
@@ -694,12 +805,22 @@ impl Deck {
                     p.verbs = sp.cmds.clone();
                     if sp.fill {
                         if let Some(c) = sh.fill {
-                            dl.push(Command::FillPath { path: p.clone(), paint: Paint::Solid(c), fill_rule: FillRule::NonZero, transform: tf });
+                            dl.push(Command::FillPath {
+                                path: p.clone(),
+                                paint: Paint::Solid(c),
+                                fill_rule: FillRule::NonZero,
+                                transform: tf,
+                            });
                         }
                     }
                     if sp.stroke {
                         if let Some(o) = sh.outline {
-                            dl.push(Command::StrokePath { path: p, paint: Paint::Solid(o.color), width: o.width, transform: tf });
+                            dl.push(Command::StrokePath {
+                                path: p,
+                                paint: Paint::Solid(o.color),
+                                width: o.width,
+                                transform: tf,
+                            });
                         }
                     }
                 }
@@ -707,17 +828,38 @@ impl Deck {
                 let p = preset_path(preset, sh.w, sh.h, &sh.adj);
                 if !preset.is_open() {
                     if let Some(c) = sh.fill {
-                        dl.push(Command::FillPath { path: p.clone(), paint: Paint::Solid(c), fill_rule: FillRule::NonZero, transform: tf });
+                        dl.push(Command::FillPath {
+                            path: p.clone(),
+                            paint: Paint::Solid(c),
+                            fill_rule: FillRule::NonZero,
+                            transform: tf,
+                        });
                     }
                 }
                 if let Some(o) = sh.outline {
-                    dl.push(Command::StrokePath { path: p, paint: Paint::Solid(o.color), width: o.width, transform: tf });
+                    dl.push(Command::StrokePath {
+                        path: p,
+                        paint: Paint::Solid(o.color),
+                        width: o.width,
+                        transform: tf,
+                    });
                 } else if preset.is_open() {
                     // a connector/line with no explicit outline still needs a stroke
-                    dl.push(Command::StrokePath { path: p, paint: Paint::Solid(Color::rgb(0x40, 0x40, 0x40)), width: 1.0, transform: tf });
+                    dl.push(Command::StrokePath {
+                        path: p,
+                        paint: Paint::Solid(Color::rgb(0x40, 0x40, 0x40)),
+                        width: 1.0,
+                        transform: tf,
+                    });
                 }
             } else if let Some(fill) = sh.fill {
-                dl.push(fill_rect(sh.x * scale, sh.y * scale, sh.w * scale, sh.h * scale, fill));
+                dl.push(fill_rect(
+                    sh.x * scale,
+                    sh.y * scale,
+                    sh.w * scale,
+                    sh.h * scale,
+                    fill,
+                ));
             }
 
             if let Some(img) = &sh.image {
@@ -732,7 +874,11 @@ impl Deck {
                     }
                     _ if !sh.custom.is_empty() => {
                         let mut path = PathData::new();
-                        path.verbs = sh.custom.iter().flat_map(|sp| sp.cmds.iter().copied()).collect();
+                        path.verbs = sh
+                            .custom
+                            .iter()
+                            .flat_map(|sp| sp.cmds.iter().copied())
+                            .collect();
                         for v in &mut path.verbs {
                             *v = tf_verb(*v, &tf);
                         }
@@ -792,11 +938,26 @@ impl Deck {
             });
             let text_w = (content_w - para.mar_l * scale).max(8.0);
             let items = shape_para(fonts, para, scale, fs);
-            let wrapped = if items.is_empty() { vec![Vec::new()] } else { wrap(items, text_w) };
+            let wrapped = if items.is_empty() {
+                vec![Vec::new()]
+            } else {
+                wrap(items, text_w)
+            };
             for (li, line) in wrapped.into_iter().enumerate() {
-                let max_size = line.iter().map(|i| i.size).fold(14.0 * scale * fs, f32::max);
-                let h = if para.ln_spc_pts > 0.0 { para.ln_spc_pts * scale } else { max_size * para.ln_spc };
-                let gap = if li == 0 { std::mem::take(&mut pending) } else { 0.0 };
+                let max_size = line
+                    .iter()
+                    .map(|i| i.size)
+                    .fold(14.0 * scale * fs, f32::max);
+                let h = if para.ln_spc_pts > 0.0 {
+                    para.ln_spc_pts * scale
+                } else {
+                    max_size * para.ln_spc
+                };
+                let gap = if li == 0 {
+                    std::mem::take(&mut pending)
+                } else {
+                    0.0
+                };
                 total += gap + h;
                 lines.push(LLine {
                     items: line,
@@ -836,16 +997,30 @@ impl Deck {
             // Bullet (hangs at text_left + indent).
             if let Some((ch, bsz, bcol)) = &ln.bullet {
                 let bc = ch.chars().next().unwrap_or(' ');
-                let bf = if fonts.covers(0, bc) { 0 } else { fonts.idx_for(None, None, bc) };
+                let bf = if fonts.covers(0, bc) {
+                    0
+                } else {
+                    fonts.idx_for(None, None, bc)
+                };
                 let shaped = shape(fonts.get(bf), ch, *bsz);
                 let s = *bsz / shaped.units_per_em.max(1.0);
                 let mut bx = text_left + ln.indent;
                 let mut glyphs = Vec::new();
                 for g in &shaped.glyphs {
-                    glyphs.push(PositionedGlyph { id: g.glyph_id, x: bx + g.x_offset * s, y: baseline });
+                    glyphs.push(PositionedGlyph {
+                        id: g.glyph_id,
+                        x: bx + g.x_offset * s,
+                        y: baseline,
+                    });
                     bx += g.x_advance * s;
                 }
-                dl.push(Command::Glyphs(GlyphRun { font: FontId(bf as u32), size: *bsz, paint: Paint::Solid(*bcol), bold: false, glyphs }));
+                dl.push(Command::Glyphs(GlyphRun {
+                    font: FontId(bf as u32),
+                    size: *bsz,
+                    paint: Paint::Solid(*bcol),
+                    bold: false,
+                    glyphs,
+                }));
             }
             // Highlight background runs first (so glyphs sit on top).
             {
@@ -862,7 +1037,13 @@ impl Deck {
                     }
                     if let Some(c) = hl {
                         if x > run_x0 {
-                            dl.push(fill_rect(run_x0, baseline - size * 0.82, x - run_x0, size * 1.05, c));
+                            dl.push(fill_rect(
+                                run_x0,
+                                baseline - size * 0.82,
+                                x - run_x0,
+                                size * 1.05,
+                                c,
+                            ));
                         }
                     }
                 }
@@ -871,7 +1052,13 @@ impl Deck {
             let mut x = x_start;
             let mut i = 0;
             while i < ln.items.len() {
-                let (size, color, bold, ul, fnt) = (ln.items[i].size, ln.items[i].color, ln.items[i].bold, ln.items[i].underline, ln.items[i].font);
+                let (size, color, bold, ul, fnt) = (
+                    ln.items[i].size,
+                    ln.items[i].color,
+                    ln.items[i].bold,
+                    ln.items[i].underline,
+                    ln.items[i].font,
+                );
                 let run_x0 = x;
                 let mut glyphs = Vec::new();
                 while i < ln.items.len()
@@ -881,14 +1068,30 @@ impl Deck {
                     && ln.items[i].underline == ul
                     && ln.items[i].font == fnt
                 {
-                    glyphs.push(PositionedGlyph { id: ln.items[i].gid, x: x + ln.items[i].x_off, y: baseline });
+                    glyphs.push(PositionedGlyph {
+                        id: ln.items[i].gid,
+                        x: x + ln.items[i].x_off,
+                        y: baseline,
+                    });
                     x += ln.items[i].advance;
                     i += 1;
                 }
-                dl.push(Command::Glyphs(GlyphRun { font: FontId(fnt as u32), size, paint: Paint::Solid(color), bold, glyphs }));
+                dl.push(Command::Glyphs(GlyphRun {
+                    font: FontId(fnt as u32),
+                    size,
+                    paint: Paint::Solid(color),
+                    bold,
+                    glyphs,
+                }));
                 if ul && x > run_x0 {
                     let uy = baseline + size * 0.12;
-                    dl.push(fill_rect(run_x0, uy, x - run_x0, (size * 0.06).max(1.0), color));
+                    dl.push(fill_rect(
+                        run_x0,
+                        uy,
+                        x - run_x0,
+                        (size * 0.06).max(1.0),
+                        color,
+                    ));
                 }
             }
             y += ln.h;
@@ -1052,20 +1255,31 @@ fn parse_part_shapes(
                         if let Some(s) = cur.as_mut() {
                             s.flip_h = get_attr(&e, b"flipH").as_deref() == Some("1");
                             s.flip_v = get_attr(&e, b"flipV").as_deref() == Some("1");
-                            s.rot = get_attr(&e, b"rot").and_then(|v| v.parse::<f32>().ok()).map(|r| r / 60000.0).unwrap_or(0.0);
+                            s.rot = get_attr(&e, b"rot")
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .map(|r| r / 60000.0)
+                                .unwrap_or(0.0);
                         }
                     }
                 }
                 b"a:chOff" => {
                     if in_grpspr {
-                        g_xfrm[4] = get_attr(&e, b"x").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-                        g_xfrm[5] = get_attr(&e, b"y").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                        g_xfrm[4] = get_attr(&e, b"x")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
+                        g_xfrm[5] = get_attr(&e, b"y")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(0.0);
                     }
                 }
                 b"a:chExt" => {
                     if in_grpspr {
-                        g_xfrm[6] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-                        g_xfrm[7] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                        g_xfrm[6] = get_attr(&e, b"cx")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
+                        g_xfrm[7] = get_attr(&e, b"cy")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(1.0);
                     }
                 }
                 b"p:ph" => {
@@ -1082,7 +1296,9 @@ fn parse_part_shapes(
                     if let Some(rid) = get_attr(&e, b"r:embed") {
                         if let Some(target) = slide_rels.get(&rid) {
                             let path = resolve_rel(slide_dir, target);
-                            if let Some(img) = read_bytes(zip, &path).and_then(|b| dv_image::decode(&b)) {
+                            if let Some(img) =
+                                read_bytes(zip, &path).and_then(|b| dv_image::decode(&b))
+                            {
                                 if in_bg {
                                     bg_image = Some(img); // p:bg blipFill -> full-slide background
                                 } else if let Some(s) = cur.as_mut() {
@@ -1137,7 +1353,10 @@ fn parse_part_shapes(
                             bg = Some(col);
                         } else if in_ln {
                             if let Some(s) = cur.as_mut() {
-                                s.outline = Some(Outline { color: col, width: ln_width });
+                                s.outline = Some(Outline {
+                                    color: col,
+                                    width: ln_width,
+                                });
                             }
                         } else if in_rpr {
                             if let Some(r) = cur_run.as_mut() {
@@ -1152,8 +1371,16 @@ fn parse_part_shapes(
                 }
                 b"a:highlight" => in_hl = !empty,
                 b"a:lumMod" | b"a:lumOff" | b"a:shade" | b"a:tint" => {
-                    if let Some(val) = get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()).map(|v| v / 100000.0) {
-                        let kind = e.name().as_ref().strip_prefix(b"a:").unwrap_or(b"").to_vec();
+                    if let Some(val) = get_attr(&e, b"val")
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .map(|v| v / 100000.0)
+                    {
+                        let kind = e
+                            .name()
+                            .as_ref()
+                            .strip_prefix(b"a:")
+                            .unwrap_or(b"")
+                            .to_vec();
                         if in_bg {
                             if let Some(c) = bg {
                                 bg = Some(apply_mod(c, &kind, val));
@@ -1195,7 +1422,11 @@ fn parse_part_shapes(
                 }
                 b"a:gd" => {
                     if let Some(s) = cur.as_mut() {
-                        if let Some(v) = get_attr(&e, b"fmla").and_then(|f| f.split_whitespace().last().and_then(|x| x.parse::<i32>().ok())) {
+                        if let Some(v) = get_attr(&e, b"fmla").and_then(|f| {
+                            f.split_whitespace()
+                                .last()
+                                .and_then(|x| x.parse::<i32>().ok())
+                        }) {
                             s.adj.push(v);
                         }
                     }
@@ -1204,7 +1435,11 @@ fn parse_part_shapes(
                     // A bare <a:ln/> with no solidFill draws NO line. Remember the
                     // width; the outline is created only when a line colour appears.
                     in_ln = !empty;
-                    ln_width = get_attr(&e, b"w").and_then(|v| v.parse::<f32>().ok()).map(|emu| emu / EMU_PER_PX).unwrap_or(1.0).max(0.75);
+                    ln_width = get_attr(&e, b"w")
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .map(|emu| emu / EMU_PER_PX)
+                        .unwrap_or(1.0)
+                        .max(0.75);
                 }
                 b"a:custGeom" => {
                     if let Some(s) = cur.as_mut() {
@@ -1212,11 +1447,22 @@ fn parse_part_shapes(
                     }
                 }
                 b"a:path" => {
-                    path_w = get_attr(&e, b"w").and_then(|v| v.parse().ok()).unwrap_or(1.0);
-                    path_h = get_attr(&e, b"h").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    path_w = get_attr(&e, b"w")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1.0);
+                    path_h = get_attr(&e, b"h")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1.0);
                     let fill = get_attr(&e, b"fill").as_deref() != Some("none");
-                    let stroke = !matches!(get_attr(&e, b"stroke").as_deref(), Some("0") | Some("false"));
-                    cur_sub = Some(SubPath { cmds: Vec::new(), fill, stroke });
+                    let stroke = !matches!(
+                        get_attr(&e, b"stroke").as_deref(),
+                        Some("0") | Some("false")
+                    );
+                    cur_sub = Some(SubPath {
+                        cmds: Vec::new(),
+                        fill,
+                        stroke,
+                    });
                 }
                 b"a:moveTo" => {
                     cmd_kind = 1;
@@ -1251,7 +1497,11 @@ fn parse_part_shapes(
                             Some("b") => 2,
                             _ => 0,
                         };
-                        let emu = |k: &[u8]| get_attr(&e, k).and_then(|v| v.parse::<f32>().ok()).map(|x| x / EMU_PER_PX);
+                        let emu = |k: &[u8]| {
+                            get_attr(&e, k)
+                                .and_then(|v| v.parse::<f32>().ok())
+                                .map(|x| x / EMU_PER_PX)
+                        };
                         if let Some(v) = emu(b"lIns") {
                             s.body.ins_l = v;
                         }
@@ -1268,7 +1518,9 @@ fn parse_part_shapes(
                 }
                 b"a:normAutofit" => {
                     if let Some(s) = cur.as_mut() {
-                        if let Some(fs) = get_attr(&e, b"fontScale").and_then(|v| v.parse::<f32>().ok()) {
+                        if let Some(fs) =
+                            get_attr(&e, b"fontScale").and_then(|v| v.parse::<f32>().ok())
+                        {
                             s.body.font_scale = fs / 100000.0;
                         }
                     }
@@ -1286,7 +1538,8 @@ fn parse_part_shapes(
                         if let Some(v) = get_attr(&e, b"marL").and_then(|v| v.parse::<f32>().ok()) {
                             p.mar_l = v / EMU_PER_PX;
                         }
-                        if let Some(v) = get_attr(&e, b"indent").and_then(|v| v.parse::<f32>().ok()) {
+                        if let Some(v) = get_attr(&e, b"indent").and_then(|v| v.parse::<f32>().ok())
+                        {
                             p.indent = v / EMU_PER_PX;
                         }
                     }
@@ -1297,13 +1550,19 @@ fn parse_part_shapes(
                 b"a:spcPct" => {
                     // Percent applies to line spacing; spcBef/spcAft percent is rare -> ignored.
                     if spc_target == 1 {
-                        if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok())) {
+                        if let (Some(p), Some(v)) = (
+                            cur_para.as_mut(),
+                            get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()),
+                        ) {
                             p.ln_spc = v / 100000.0;
                         }
                     }
                 }
                 b"a:spcPts" => {
-                    if let (Some(p), Some(v)) = (cur_para.as_mut(), get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok())) {
+                    if let (Some(p), Some(v)) = (
+                        cur_para.as_mut(),
+                        get_attr(&e, b"val").and_then(|v| v.parse::<f32>().ok()),
+                    ) {
                         let px = v / 75.0; // hundredths-of-point -> px
                         match spc_target {
                             1 => p.ln_spc_pts = px,
@@ -1353,7 +1612,10 @@ fn parse_part_shapes(
                     if in_rpr {
                         if let (Some(r), Some(tf)) = (cur_run.as_mut(), get_attr(&e, b"typeface")) {
                             // a "Black"/"Bold"/"Heavy" face name implies faux-bold weight.
-                            if ["Black", "Bold", "Heavy", "Semibold", "SemiBold"].iter().any(|w| tf.contains(w)) {
+                            if ["Black", "Bold", "Heavy", "Semibold", "SemiBold"]
+                                .iter()
+                                .any(|w| tf.contains(w))
+                            {
                                 r.bold = true;
                             }
                             // remember the declared face for per-run font selection
@@ -1385,8 +1647,16 @@ fn parse_part_shapes(
                     // Only real <p:grpSp> groups establish a child transform; the
                     // spTree root's grpSpPr (depth 0) is ignored.
                     if grp_depth > 0 {
-                        let gsx = if g_xfrm[6] != 0.0 { g_xfrm[2] / g_xfrm[6] } else { 1.0 };
-                        let gsy = if g_xfrm[7] != 0.0 { g_xfrm[3] / g_xfrm[7] } else { 1.0 };
+                        let gsx = if g_xfrm[6] != 0.0 {
+                            g_xfrm[2] / g_xfrm[6]
+                        } else {
+                            1.0
+                        };
+                        let gsy = if g_xfrm[7] != 0.0 {
+                            g_xfrm[3] / g_xfrm[7]
+                        } else {
+                            1.0
+                        };
                         let ltx = (g_xfrm[0] - g_xfrm[4] * gsx) / EMU_PER_PX;
                         let lty = (g_xfrm[1] - g_xfrm[5] * gsy) / EMU_PER_PX;
                         let (psx, psy, ptx, pty) = *gstack.last().unwrap();
@@ -1415,7 +1685,8 @@ fn parse_part_shapes(
                             3 => {
                                 if pt_buf.len() >= 3 {
                                     let (a, b, c) = (pt_buf[0], pt_buf[1], pt_buf[2]);
-                                    sp.cmds.push(PathVerb::CubicTo(a.0, a.1, b.0, b.1, c.0, c.1));
+                                    sp.cmds
+                                        .push(PathVerb::CubicTo(a.0, a.1, b.0, b.1, c.0, c.1));
                                 }
                             }
                             _ => {}
@@ -1495,10 +1766,18 @@ fn shape_para(fonts: &Fonts, para: &Para, scale: f32, font_scale: f32) -> Vec<It
         let chars: Vec<char> = run.text.chars().collect();
         let mut i = 0;
         while i < chars.len() {
-            let fi = fonts.idx_for(run.font_latin.as_deref(), run.font_east_asia.as_deref(), chars[i]);
+            let fi = fonts.idx_for(
+                run.font_latin.as_deref(),
+                run.font_east_asia.as_deref(),
+                chars[i],
+            );
             let mut sub = String::new();
             while i < chars.len()
-                && fonts.idx_for(run.font_latin.as_deref(), run.font_east_asia.as_deref(), chars[i]) == fi
+                && fonts.idx_for(
+                    run.font_latin.as_deref(),
+                    run.font_east_asia.as_deref(),
+                    chars[i],
+                ) == fi
             {
                 sub.push(chars[i]);
                 i += 1;
@@ -1506,7 +1785,10 @@ fn shape_para(fonts: &Fonts, para: &Para, scale: f32, font_scale: f32) -> Vec<It
             let shaped = shape(fonts.get(fi), &sub, px);
             let s = px / shaped.units_per_em.max(1.0);
             for g in &shaped.glyphs {
-                let ch = sub.get(g.cluster as usize..).and_then(|x| x.chars().next()).unwrap_or(' ');
+                let ch = sub
+                    .get(g.cluster as usize..)
+                    .and_then(|x| x.chars().next())
+                    .unwrap_or(' ');
                 let is_space = ch.is_whitespace();
                 items.push(Item {
                     gid: g.glyph_id,
@@ -1552,7 +1834,11 @@ fn wrap(items: Vec<Item>, content_w: f32) -> Vec<Vec<Item>> {
 }
 
 fn line_width(line: &[Item]) -> f32 {
-    let end = line.iter().rposition(|i| !i.is_space).map(|i| i + 1).unwrap_or(0);
+    let end = line
+        .iter()
+        .rposition(|i| !i.is_space)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     line[..end].iter().map(|i| i.advance).sum()
 }
 
@@ -1563,7 +1849,12 @@ fn fill_rect(x: f32, y: f32, w: f32, h: f32, color: Color) -> Command {
     p.line_to(x + w, y + h);
     p.line_to(x, y + h);
     p.close();
-    Command::FillPath { path: p, paint: Paint::Solid(color), fill_rule: FillRule::NonZero, transform: Transform::IDENTITY }
+    Command::FillPath {
+        path: p,
+        paint: Paint::Solid(color),
+        fill_rule: FillRule::NonZero,
+        transform: Transform::IDENTITY,
+    }
 }
 
 fn adj_or(adj: &[i32], i: usize, default: i32) -> f32 {
@@ -1602,7 +1893,9 @@ fn scale_verb(v: PathVerb, sx: f32, sy: f32) -> PathVerb {
         PathVerb::MoveTo(x, y) => PathVerb::MoveTo(x * sx, y * sy),
         PathVerb::LineTo(x, y) => PathVerb::LineTo(x * sx, y * sy),
         PathVerb::QuadTo(a, b, c, d) => PathVerb::QuadTo(a * sx, b * sy, c * sx, d * sy),
-        PathVerb::CubicTo(a, b, c, d, e, f) => PathVerb::CubicTo(a * sx, b * sy, c * sx, d * sy, e * sx, f * sy),
+        PathVerb::CubicTo(a, b, c, d, e, f) => {
+            PathVerb::CubicTo(a * sx, b * sy, c * sx, d * sy, e * sx, f * sy)
+        }
         PathVerb::Close => PathVerb::Close,
     }
 }
@@ -1632,7 +1925,8 @@ fn preset_path(p: Preset, w: f32, h: f32, adj: &[i32]) -> PathData {
         Preset::Arc => {
             // elliptical arc from adj1 (start) sweeping to adj2 (end), in 60000ths°
             let (cx, cy, rx, ry) = (w / 2.0, h / 2.0, w / 2.0, h / 2.0);
-            let st = *adj.first().unwrap_or(&16200000) as f32 / 60000.0 * std::f32::consts::PI / 180.0;
+            let st =
+                *adj.first().unwrap_or(&16200000) as f32 / 60000.0 * std::f32::consts::PI / 180.0;
             let en = *adj.get(1).unwrap_or(&0) as f32 / 60000.0 * std::f32::consts::PI / 180.0;
             let n = 24;
             for i in 0..=n {

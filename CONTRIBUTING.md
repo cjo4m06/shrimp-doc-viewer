@@ -62,7 +62,8 @@ cargo run -p dv-pptx --example pptx_demo -- <file.pptx> <font.ttf>
 - For **rendering changes, include before/after screenshots** — fidelity is the whole
   point here, so visual evidence is expected. Compare against a reference, don't
   eyeball it.
-- Run `cargo fmt` / `cargo clippy` if you can (CI runs them as advisory checks).
+- `cargo fmt --all` and `cargo clippy --workspace --exclude dv-wasm --all-targets -- -D warnings`
+  are clean (CI enforces both).
 - Keep PRs focused; explain the *why*, not just the *what*.
 
 ## Do not commit
@@ -75,8 +76,8 @@ cargo run -p dv-pptx --example pptx_demo -- <file.pptx> <font.ttf>
 ## CI
 
 Every PR runs the workflow in `.github/workflows/ci.yml`: native build + tests, a
-wasm-target compile check (required), and fmt/clippy (advisory for now). Required
-checks must be green before merge.
+wasm-target compile check, and fmt + clippy — all required. They must be green
+before merge.
 
 ## Licensing of contributions
 
