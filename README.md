@@ -225,8 +225,16 @@ cargo run -p dv-pptx --example pptx_demo -- <file.pptx> <font.ttf>
 
 ## Contributing
 
-PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for build/test steps and the
-PR checklist. Rendering changes should include before/after screenshots.
+**This is a community project — everyone is welcome, and PRs of any size are genuinely
+appreciated.** 🦐 Whether it's a one-line fix, a new format, better docs, or just
+[a tricky file that won't render](#hit-an-unsupported-format-or-a-file-that-wont-render),
+jump in — the goal is to maintain and grow ShrimpDocViewer together. New contributors
+and first-time PRs especially welcome; format-support and fidelity improvements are
+where help goes furthest.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test steps and the PR checklist
+(rendering changes should include before/after screenshots). Be kind and constructive
+in reviews and issues — we're all here to make a better viewer.
 
 ## License
 
