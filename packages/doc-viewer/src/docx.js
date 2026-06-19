@@ -49,6 +49,8 @@ export class DocxViewer {
     this.onZoom = opts.onZoom;
     this.pageEls = [];
     this.rendered = new Set();
+    this._queue = []; // pages waiting to rasterize (one per frame, so no batch freeze)
+    this._rv = 0;
 
     container.replaceChildren();
     this._build(container);
@@ -103,9 +105,28 @@ export class DocxViewer {
   _onIntersect(entries) {
     for (const e of entries) {
       const i = Number(e.target.dataset.page);
-      if (e.isIntersecting) this._renderPage(i);
+      if (e.isIntersecting) this._enqueue(i);
       else this._evict(i);
     }
+  }
+
+  // Rasterize at most one page per animation frame so a batch (e.g. the many pages
+  // visible after zooming out) never freezes the main thread in one go.
+  _enqueue(i) {
+    if (this.rendered.has(i) || this._queue.includes(i)) return;
+    this._queue.push(i);
+    this._pump();
+  }
+
+  _pump() {
+    if (this._rv) return;
+    this._rv = requestAnimationFrame(() => {
+      this._rv = 0;
+      let i;
+      while ((i = this._queue.shift()) !== undefined && (this.rendered.has(i) || !this._isNear(i))) {}
+      if (i !== undefined) this._renderPage(i);
+      if (this._queue.length) this._pump();
+    });
   }
 
   _renderPage(i) {
@@ -136,7 +157,7 @@ export class DocxViewer {
   }
 
   _renderVisible() {
-    for (let i = 0; i < this.pageCount; i++) if (this._isNear(i)) this._renderPage(i);
+    for (let i = 0; i < this.pageCount; i++) if (this._isNear(i)) this._enqueue(i);
   }
 
   setZoom(z) {
@@ -161,6 +182,7 @@ export class DocxViewer {
     // Re-rasterize crisply once zooming settles (coalesces rapid ticks).
     clearTimeout(this._zt);
     this._zt = setTimeout(() => {
+      this._queue = []; // drop stale (pre-zoom) render requests
       for (const i of [...this.rendered]) this._evict(i);
       this._renderVisible();
     }, 160);
@@ -179,6 +201,8 @@ export class DocxViewer {
 
   destroy() {
     this._observer?.disconnect();
+    if (this._rv) cancelAnimationFrame(this._rv);
+    clearTimeout(this._zt);
     this.pages.removeEventListener("wheel", this._wheel);
     this.pages.parentElement?.replaceChildren?.();
   }
