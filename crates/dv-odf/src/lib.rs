@@ -51,6 +51,8 @@ struct SpanStyle {
 
 /// Build the automatic-style map (style name -> character style) by scanning
 /// `<style:style>` / `<style:text-properties>` that precede the body.
+// The `if cur_name.is_some()` body reads clearer than a match guard over its 30 lines.
+#[allow(clippy::collapsible_match)]
 fn parse_styles(xml: &str) -> HashMap<String, SpanStyle> {
     let mut reader = Reader::from_str(xml);
     let mut map = HashMap::new();

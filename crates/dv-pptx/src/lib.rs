@@ -1176,7 +1176,7 @@ fn rel_target(xml: &str, type_suffix: &str) -> Option<String> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::collapsible_match)]
 fn parse_part_shapes(
     xml: &str,
     slide_rels: &HashMap<String, String>,

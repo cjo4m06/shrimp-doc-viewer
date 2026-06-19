@@ -1,4 +1,7 @@
+# Pinned so the required fmt/clippy CI gate is deterministic — a floating "stable"
+# would let a future clippy release add lints that fail CI on unrelated commits.
+# Bump deliberately (and re-run `cargo clippy`/`cargo fmt`) to adopt a newer toolchain.
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 targets = ["wasm32-unknown-unknown"]
 components = ["rustfmt", "clippy"]
