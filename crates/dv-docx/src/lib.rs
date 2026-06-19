@@ -247,6 +247,8 @@ struct DShape {
     outline: Option<(Color, f32)>,
     rounded: bool, // roundRect / callout -> rounded corners
     is_line: bool, // connector -> stroke a diagonal
+    flip_v: bool,  // xfrm flipV -> diagonal runs bottom-left to top-right
+    flip_h: bool,
     blocks: Vec<Block>,
     // text laid out at layout time (so rendering needs no font): glyphs + height
     glyphs: Vec<(u32, f32, f32, f32, Color, bool)>,
@@ -662,7 +664,7 @@ fn parse_document(xml: &str) -> Document {
                         pos_target = if pos_target >= 20 { 2 } else { 1 };
                     }
                     b"wps:wsp" | b"wps:cxnSp" if cur_float.is_some() => {
-                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
+                        cur_dshape = Some(DShape { x: 0.0, y: 0.0, w: 0.0, h: 0.0, fill: None, outline: None, rounded: false, is_line: false, flip_v: false, flip_h: false, blocks: Vec::new(), glyphs: Vec::new(), text_h: 0.0 });
                     }
                     b"wpg:grpSpPr" if cur_float.is_some() => {
                         in_grpspr = !is_empty;
@@ -687,6 +689,12 @@ fn parse_document(xml: &str) -> Document {
                     b"a:chExt" if in_grpspr => {
                         g_xfrm[6] = get_attr(&e, b"cx").and_then(|v| v.parse().ok()).unwrap_or(1.0);
                         g_xfrm[7] = get_attr(&e, b"cy").and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    }
+                    b"a:xfrm" if cur_float.is_some() => {
+                        if let Some(s) = cur_dshape.as_mut() {
+                            s.flip_v = get_attr(&e, b"flipV").as_deref() == Some("1");
+                            s.flip_h = get_attr(&e, b"flipH").as_deref() == Some("1");
+                        }
                     }
                     b"a:off" if cur_float.is_some() => {
                         if let Some(s) = cur_dshape.as_mut() {
@@ -2117,17 +2125,39 @@ fn render_float(dl: &mut DisplayList, fl: &Float, margin_l: f32, dy: f32, scale:
             clip: None,
         });
     }
-    // Grouped shapes carry group coords; their x layout is meaningful but their
-    // absolute y is the group's canvas position — re-anchor the whole group so its
-    // top sits at the anchor paragraph (fy), matching the reserved body space.
-    let gmin_y = if fl.grouped { fl.shapes.iter().map(|s| s.y).fold(f32::MAX, f32::min) } else { 0.0 };
+    // Grouped shapes carry group-canvas coords; re-anchor the WHOLE group (both
+    // axes) so its top-left corner lands at (fx, fy) — the same origin as the
+    // group's background image — otherwise the callouts shift off the picture.
+    let (gmin_x, gmin_y) = if fl.grouped {
+        (
+            fl.shapes.iter().map(|s| s.x).fold(f32::MAX, f32::min),
+            fl.shapes.iter().map(|s| s.y).fold(f32::MAX, f32::min),
+        )
+    } else {
+        (0.0, 0.0)
+    };
     for sh in &fl.shapes {
-        let (sx, sy) = if fl.grouped { (sh.x, sh.y - gmin_y + fy) } else { (fx, fy) };
+        let (sx, sy) = if fl.grouped { (sh.x - gmin_x + fx, sh.y - gmin_y + fy) } else { (fx, fy) };
         if sh.is_line {
             if let Some((c, w)) = sh.outline {
+                // A connector's bbox is the rectangle it spans. A mostly-vertical or
+                // mostly-horizontal connector is drawn as a straight axis line (Word
+                // routes these orthogonally); only a roughly-square bbox is a diagonal.
+                let (mut x0, mut y0, mut x1, mut y1);
+                if sh.h > sh.w * 2.0 {
+                    let mx = sx + sh.w / 2.0;
+                    x0 = mx; x1 = mx; y0 = sy; y1 = sy + sh.h;
+                } else if sh.w > sh.h * 2.0 {
+                    let my = sy + sh.h / 2.0;
+                    x0 = sx; x1 = sx + sh.w; y0 = my; y1 = my;
+                } else {
+                    x0 = sx; x1 = sx + sh.w; y0 = sy; y1 = sy + sh.h;
+                    if sh.flip_h { std::mem::swap(&mut x0, &mut x1); }
+                    if sh.flip_v { std::mem::swap(&mut y0, &mut y1); }
+                }
                 let mut p = dv_ir::PathData::new();
-                p.move_to(sx * scale, sy * scale);
-                p.line_to((sx + sh.w) * scale, (sy + sh.h) * scale);
+                p.move_to(x0 * scale, y0 * scale);
+                p.line_to(x1 * scale, y1 * scale);
                 dl.push(Command::StrokePath { path: p, paint: Paint::Solid(c), width: (w * scale).max(1.0), transform: dv_ir::Transform::IDENTITY });
             }
             continue;
@@ -2428,7 +2458,13 @@ fn resolve_images(doc: &mut Document, bytes: &[u8], rels_name: &str) {
     let decode = |rid: &str| -> Option<dv_image::DecodedImage> {
         let target = rels.get(rid)?;
         let path = resolve_rel("word", target);
-        read_zip_bytes(bytes, &path).and_then(|b| dv_image::decode(&b))
+        let img = read_zip_bytes(bytes, &path).and_then(|b| dv_image::decode(&b))?;
+        // 1x1 (and other degenerate) images are transparent spacers/placeholders;
+        // stretched to the drawing extent they become spurious colour blocks.
+        if img.width <= 2 || img.height <= 2 {
+            return None;
+        }
+        Some(img)
     };
     let mut paras = Vec::new();
     collect_paras_mut(&mut doc.blocks, &mut paras);
