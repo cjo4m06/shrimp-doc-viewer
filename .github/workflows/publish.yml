@@ -47,6 +47,19 @@ jobs:
             echo "::error::tag v$TAG does not match package.json version $PKG"; exit 1
           fi
 
+      - name: Sanity — built wasm passes WebAssembly.validate
+        working-directory: packages/doc-viewer
+        run: |
+          node -e '
+            const fs = require("fs");
+            const b = fs.readFileSync("wasm/dv_wasm_bg.wasm");
+            if (!WebAssembly.validate(b)) {
+              console.error("::error::wasm/dv_wasm_bg.wasm fails WebAssembly.validate — refusing to publish a broken core");
+              process.exit(1);
+            }
+            console.log(`wasm OK: ${b.length} bytes, validates`);
+          '
+
       - name: Publish to npm
         working-directory: packages/doc-viewer
         run: npm publish --provenance --access public
