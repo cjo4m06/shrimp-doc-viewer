@@ -1,0 +1,83 @@
+name: Deploy demo to GitHub Pages
+
+# Builds the standalone drag-and-drop demo (demo/index.html) into a self-contained
+# static site and publishes it to GitHub Pages. The viewer package + PDFium are
+# pulled from the *published* npm release, so the live demo shows exactly what
+# `npm install shrimp-doc-viewer` gives users. Sample documents come from the repo.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/**"
+      - "examples/assets/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; let in-progress runs finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch published viewer + PDFium from npm
+        run: |
+          mkdir -p /tmp/dv
+          cd /tmp/dv
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund shrimp-doc-viewer@latest @embedpdf/pdfium@^2
+
+      - name: Assemble static site
+        run: |
+          set -eux
+          mkdir -p _site/vendor/doc-viewer _site/vendor/pdfium _site/assets
+
+          # The demo page (drag-and-drop showcase)
+          cp demo/index.html _site/index.html
+
+          # Vendor the published viewer (src + prebuilt wasm + bundled font), same-origin
+          cp -R /tmp/dv/node_modules/shrimp-doc-viewer/src   _site/vendor/doc-viewer/src
+          cp -R /tmp/dv/node_modules/shrimp-doc-viewer/wasm  _site/vendor/doc-viewer/wasm
+          cp -R /tmp/dv/node_modules/shrimp-doc-viewer/fonts _site/vendor/doc-viewer/fonts
+
+          # Vendor PDFium (wasm engine + JS glue) same-origin
+          cp -R /tmp/dv/node_modules/@embedpdf/pdfium/dist/. _site/vendor/pdfium/
+
+          # Sample documents the demo's quick-try chips load
+          for f in sample.docx sample-zhTW.pdf cjk.rtf sample.xlsx sample.pptx \
+                   stress.md styled.odt sample.svg sample.md sample.csv \
+                   sample.odt sample.ods sample.odp sample-multipage.pdf; do
+            [ -f "examples/assets/$f" ] && cp "examples/assets/$f" _site/assets/ || true
+          done
+
+          # Don't let GitHub Pages run Jekyll over the vendored files
+          touch _site/.nojekyll
+          ls -R _site | head -50
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

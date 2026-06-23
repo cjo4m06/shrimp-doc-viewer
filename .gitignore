@@ -18,6 +18,12 @@ examples/assets/realtest*
 # but DO commit the tiny synthetic test fixtures the crate tests read
 !crates/**/tests/**/*.png
 
+# Local Pages build output (assembled by hand to test demo/ before deploy)
+.pages-build/
+
+# Local promo drafts (not part of the project)
+PROMO-DRAFTS.local.md
+
 # Editor / OS
 .DS_Store
 .idea/
