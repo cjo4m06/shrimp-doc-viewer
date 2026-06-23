@@ -13,8 +13,12 @@ let _ready = null;
  * Used as the fallback when the caller passes no `fontUrl`, so `mount()` works with
  * zero configuration. Override per call with `fontUrl`, or map specific families
  * with `fonts`. Resolved relative to this module so bundlers copy it automatically.
+ *
+ * Shipped as a static Regular instance of the upstream variable font (the renderer
+ * outlines at a single weight and synthesizes bold, so the weight axis was dead
+ * weight): full 20,950-glyph coverage at ~6.8 MB / 4.1 MB gzip, down from 11.4 MB.
  */
-export const DEFAULT_FONT_URL = new URL("../fonts/NotoSansTC-VF.ttf", import.meta.url).href;
+export const DEFAULT_FONT_URL = new URL("../fonts/NotoSansTC-Regular.ttf", import.meta.url).href;
 
 /**
  * Load & instantiate the WASM core (idempotent).

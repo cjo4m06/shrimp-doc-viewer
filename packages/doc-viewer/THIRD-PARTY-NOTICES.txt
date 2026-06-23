@@ -7,8 +7,9 @@ third-party crates listed below. Each is distributed under a permissive license
 Unlicense). Their copyright notices and license texts are reproduced here, as the
 licenses require, even though ShrimpDocViewer ships only the compiled binary.
 
-The bundled font (fonts/NotoSansTC-VF.ttf, Noto Sans TC) is covered separately by
-fonts/OFL.txt (SIL Open Font License 1.1). The runtime npm dependency
+The bundled font (fonts/NotoSansTC-Regular.ttf, Noto Sans TC — a static Regular
+instance of the upstream variable font, unmodified glyph outlines) is covered
+separately by fonts/OFL.txt (SIL Open Font License 1.1). The runtime npm dependency
 @embedpdf/pdfium carries its own LICENSE files within its package.
 
 Crates: 73
