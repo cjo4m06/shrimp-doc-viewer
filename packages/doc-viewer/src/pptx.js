@@ -48,21 +48,23 @@ class PptxViewer {
     const mk = (label, fn) => {
       const b = document.createElement("button");
       b.textContent = label;
-      b.style.cssText = "padding:.2rem .7rem;border:1px solid #cbd2da;border-radius:4px;cursor:pointer;background:#fff";
+      b.style.cssText = "padding:.2rem .7rem;border:1px solid var(--sdv-border,#cbd2da);border-radius:4px;cursor:pointer;background:var(--sdv-btn-bg,#fff);color:var(--sdv-btn-fg,ButtonText)";
+      b.addEventListener("mouseenter", () => { b.style.background = "var(--sdv-btn-hover-bg,var(--sdv-btn-bg,#fff))"; });
+      b.addEventListener("mouseleave", () => { b.style.background = "var(--sdv-btn-bg,#fff)"; });
       b.addEventListener("click", fn);
       bar.appendChild(b);
       return b;
     };
     mk("‹ 上一張", () => this.prev());
     this.counter = document.createElement("span");
-    this.counter.style.cssText = "font:13px ui-monospace,monospace;min-width:5em;text-align:center";
+    this.counter.style.cssText = "font:13px ui-monospace,monospace;min-width:5em;text-align:center;color:var(--sdv-fg,inherit)";
     bar.appendChild(this.counter);
     mk("下一張 ›", () => this.next());
 
     const stage = document.createElement("div");
-    stage.style.cssText = "background:#e9ecef;padding:12px;border-radius:6px;overflow:auto";
+    stage.style.cssText = "background:var(--sdv-stage-bg,#e9ecef);padding:12px;border-radius:6px;overflow:auto";
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "display:block;margin:0 auto;box-shadow:0 2px 12px rgba(0,0,0,.25);background:#fff;max-width:100%";
+    canvas.style.cssText = "display:block;margin:0 auto;box-shadow:var(--sdv-shadow,0 2px 12px rgba(0,0,0,.25));background:var(--sdv-page-bg,#fff);max-width:100%";
     stage.appendChild(canvas);
 
     container.appendChild(bar);

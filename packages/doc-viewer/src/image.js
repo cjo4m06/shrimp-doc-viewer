@@ -52,7 +52,15 @@ class ImageViewer {
   _build(container, height) {
     const bar = document.createElement("div");
     bar.style.cssText = "display:flex;gap:.4rem;align-items:center;margin-bottom:.5rem;font:13px system-ui";
-    const mk = (t, fn) => { const b = document.createElement("button"); b.textContent = t; b.onclick = fn; return b; };
+    const mk = (t, fn) => {
+      const b = document.createElement("button");
+      b.textContent = t;
+      b.style.cssText = "padding:.2rem .6rem;border:1px solid var(--sdv-border,#cbd2da);border-radius:4px;cursor:pointer;background:var(--sdv-btn-bg,#fff);color:var(--sdv-btn-fg,ButtonText)";
+      b.addEventListener("mouseenter", () => { b.style.background = "var(--sdv-btn-hover-bg,var(--sdv-btn-bg,#fff))"; });
+      b.addEventListener("mouseleave", () => { b.style.background = "var(--sdv-btn-bg,#fff)"; });
+      b.onclick = fn;
+      return b;
+    };
     this.pct = document.createElement("span");
     this.pct.style.cssText = "font:13px ui-monospace,monospace;min-width:4em;text-align:center";
     bar.append(
@@ -64,8 +72,8 @@ class ImageViewer {
     );
 
     this.scroll = document.createElement("div");
-    this.scroll.style.cssText = `height:${height};overflow:auto;border:1px solid #d8dadf;border-radius:8px;` +
-      "background:#fff conic-gradient(#eee 90deg,#fff 90deg 180deg,#eee 180deg 270deg,#fff 270deg) 0 0/24px 24px;" +
+    this.scroll.style.cssText = `height:${height};overflow:auto;border:1px solid var(--sdv-border,#d8dadf);border-radius:8px;` +
+      "background:var(--sdv-checker-b,#fff) conic-gradient(var(--sdv-checker-a,#eee) 90deg,var(--sdv-checker-b,#fff) 90deg 180deg,var(--sdv-checker-a,#eee) 180deg 270deg,var(--sdv-checker-b,#fff) 270deg) 0 0/24px 24px;" +
       "display:flex;align-items:flex-start;justify-content:center";
 
     this.img = document.createElement("img");

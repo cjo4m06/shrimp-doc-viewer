@@ -112,6 +112,55 @@ For PDF, pass `cjkFallbackFontUrl` so a PDF that *doesn't* embed its CJK fonts r
 instead of going blank (PDF doesn't use the bundled default, to avoid loading a font
 the typical embedded-font PDF doesn't need).
 
+## Theming
+
+The viewer **chrome** — toolbars, buttons, scroll/stage containers, borders, the
+page/slide counter, and page shadows — reads its colors from CSS custom properties
+that each carry the current value as a fallback. So **with zero configuration it looks
+exactly as before**; set any `--sdv-*` variable to recolor the chrome to match your
+design system or a dark theme.
+
+Custom properties cascade, so set them on the element you `mount()` into (or any
+ancestor, e.g. `:root`) — no JS option needed:
+
+```css
+/* a dark theme — set on your mount container, or :root */
+#my-doc-viewer {
+  --sdv-fg: #e6e6e6;            /* counter / zoom-label text   */
+  --sdv-border: #3a3f4b;        /* all borders                 */
+  --sdv-btn-bg: #2a2e37;        /* button background           */
+  --sdv-btn-fg: #e6e6e6;        /* button text                 */
+  --sdv-btn-hover-bg: #363b46;  /* button hover background     */
+  --sdv-surface: #1b1e24;       /* scroll / viewer container   */
+  --sdv-stage-bg: #15171c;      /* page/slide surround         */
+  --sdv-page-bg: #0f1115;       /* page/slide backdrop         */
+  --sdv-shadow: 0 2px 14px rgba(0,0,0,.7);  /* page/slide shadow */
+  --sdv-accent: #3b82f6;        /* selected sheet tab          */
+  --sdv-accent-fg: #ffffff;     /* selected sheet tab text     */
+  --sdv-checker-a: #23262e;     /* image transparency checker  */
+  --sdv-checker-b: #171a1f;     /* image transparency checker  */
+}
+```
+
+| Variable | Themes | Default (fallback) |
+| --- | --- | --- |
+| `--sdv-fg` | counter / zoom-label text | the inherited text color |
+| `--sdv-border` | every border (toolbar, buttons, scroll, sheet tabs) | `#cbd2da` |
+| `--sdv-btn-bg` | button background | `#fff` |
+| `--sdv-btn-fg` | button text | `ButtonText` (the native button color) |
+| `--sdv-btn-hover-bg` | button hover background | falls back to `--sdv-btn-bg` (no hover change unless you set it) |
+| `--sdv-surface` | scroll / viewer container background | `#fff` |
+| `--sdv-stage-bg` | the surround behind a page/slide | `#e9ecef` |
+| `--sdv-page-bg` | the page/slide backdrop | `#fff` |
+| `--sdv-shadow` | page/slide `box-shadow` | `0 2px 12px rgba(0,0,0,.25)` (slightly tighter per format; setting it unifies them) |
+| `--sdv-accent` / `--sdv-accent-fg` | the selected sheet tab (XLSX/CSV/ODS) | `#1f6feb` / `#fff` |
+| `--sdv-checker-a` / `--sdv-checker-b` | the transparency checkerboard (images) | `#eee` / `#fff` |
+
+- These only restyle the **UI around** the document — the document's own rendered
+  pixels (text, tables, the page's own white background painted onto the `<canvas>`)
+  are untouched. `--sdv-page-bg` colors the CSS backdrop behind/around that canvas.
+- Color/shadow/border values only — layout, fonts, and behavior are unchanged.
+
 ## API
 
 ### `init(options?) → Promise<{ version }>`

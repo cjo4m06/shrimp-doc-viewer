@@ -350,8 +350,8 @@ class PdfViewer {
       const el = document.createElement("div");
       el.className = "dv-page";
       el.style.cssText =
-        `width:${w}px;height:${h}px;margin:0 auto 12px;background:#fff;` +
-        `box-shadow:0 1px 6px rgba(0,0,0,.18);overflow:hidden;`;
+        `width:${w}px;height:${h}px;margin:0 auto 12px;background:var(--sdv-page-bg,#fff);` +
+        `box-shadow:var(--sdv-shadow,0 1px 6px rgba(0,0,0,.18));overflow:hidden;`;
       el.dataset.page = String(i + 1);
       this.pageEls.push(el);
       this.container.appendChild(el);

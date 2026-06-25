@@ -64,19 +64,22 @@ export class XlsxViewer {
     const mk = (label, fn) => {
       const b = document.createElement("button");
       b.textContent = label;
+      b.style.cssText = "padding:.2rem .6rem;border:1px solid var(--sdv-border,#cbd2da);border-radius:4px;cursor:pointer;background:var(--sdv-btn-bg,#fff);color:var(--sdv-btn-fg,ButtonText)";
+      b.addEventListener("mouseenter", () => { b.style.background = "var(--sdv-btn-hover-bg,var(--sdv-btn-bg,#fff))"; });
+      b.addEventListener("mouseleave", () => { b.style.background = "var(--sdv-btn-bg,#fff)"; });
       b.addEventListener("click", fn);
       bar.appendChild(b);
       return b;
     };
     mk("−", () => this.zoomOut());
     this.zoomLabel = document.createElement("span");
-    this.zoomLabel.style.cssText = "font:13px ui-monospace,monospace;min-width:3.2em;text-align:center";
+    this.zoomLabel.style.cssText = "font:13px ui-monospace,monospace;min-width:3.2em;text-align:center;color:var(--sdv-fg,inherit)";
     bar.appendChild(this.zoomLabel);
     mk("＋", () => this.zoomIn());
     mk("符合視窗", () => this.fitWidth());
 
     const scroll = document.createElement("div");
-    scroll.style.cssText = `position:relative;overflow:auto;height:${height};background:#fff;border:1px solid #ddd;border-radius:6px`;
+    scroll.style.cssText = `position:relative;overflow:auto;height:${height};background:var(--sdv-surface,#fff);border:1px solid var(--sdv-border,#ddd);border-radius:6px`;
     const spacer = document.createElement("div");
     spacer.style.cssText = "position:relative";
     const canvas = document.createElement("canvas");
@@ -186,8 +189,8 @@ export class XlsxViewer {
   _updateTabs() {
     this.tabEls.forEach((t, i) => {
       const on = i === this.sheetIndex;
-      t.style.cssText = `padding:.2rem .6rem;border:1px solid #cbd2da;border-radius:4px;cursor:pointer;` +
-        (on ? "background:#1f6feb;color:#fff;font-weight:600" : "background:#fff;color:#333");
+      t.style.cssText = `padding:.2rem .6rem;border:1px solid var(--sdv-border,#cbd2da);border-radius:4px;cursor:pointer;` +
+        (on ? "background:var(--sdv-accent,#1f6feb);color:var(--sdv-accent-fg,#fff);font-weight:600" : "background:var(--sdv-btn-bg,#fff);color:var(--sdv-btn-fg,#333)");
     });
   }
 

@@ -70,24 +70,26 @@ export class DocxViewer {
     const mk = (label, fn) => {
       const b = document.createElement("button");
       b.textContent = label;
-      b.style.cssText = "padding:.2rem .6rem;border:1px solid #cbd2da;border-radius:4px;cursor:pointer;background:#fff";
+      b.style.cssText = "padding:.2rem .6rem;border:1px solid var(--sdv-border,#cbd2da);border-radius:4px;cursor:pointer;background:var(--sdv-btn-bg,#fff);color:var(--sdv-btn-fg,ButtonText)";
+      b.addEventListener("mouseenter", () => { b.style.background = "var(--sdv-btn-hover-bg,var(--sdv-btn-bg,#fff))"; });
+      b.addEventListener("mouseleave", () => { b.style.background = "var(--sdv-btn-bg,#fff)"; });
       b.addEventListener("click", fn);
       bar.appendChild(b);
       return b;
     };
     mk("−", () => this.zoomOut());
     this.zoomLabel = document.createElement("span");
-    this.zoomLabel.style.cssText = "font:13px ui-monospace,monospace;min-width:3.2em;text-align:center";
+    this.zoomLabel.style.cssText = "font:13px ui-monospace,monospace;min-width:3.2em;text-align:center;color:var(--sdv-fg,inherit)";
     bar.appendChild(this.zoomLabel);
     mk("＋", () => this.zoomIn());
     mk("符合寬度", () => this.fitWidth());
 
     const pages = document.createElement("div");
-    pages.style.cssText = "background:#e9ecef;padding:16px;border-radius:6px";
+    pages.style.cssText = "background:var(--sdv-stage-bg,#e9ecef);padding:16px;border-radius:6px";
     for (let i = 0; i < this.pageCount; i++) {
       const el = document.createElement("div");
       el.dataset.page = String(i);
-      el.style.cssText = "margin:0 auto 16px;background:#fff;box-shadow:0 1px 8px rgba(0,0,0,.18)";
+      el.style.cssText = "margin:0 auto 16px;background:var(--sdv-page-bg,#fff);box-shadow:var(--sdv-shadow,0 1px 8px rgba(0,0,0,.18))";
       this.pageEls.push(el);
       pages.appendChild(el);
     }
